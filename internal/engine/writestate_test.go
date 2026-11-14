@@ -80,10 +80,10 @@ func TestSlowWriteDoesNotHoldTheEngineLock(t *testing.T) {
 		done <- err
 	}()
 	<-entered
+	// Health takes the engine lock; it answers while the write is held up.
 	locked := make(chan struct{})
 	go func() {
-		e.mu.Lock()
-		e.mu.Unlock() //nolint:staticcheck // only proving the lock can be taken
+		_ = e.Health(context.Background())
 		close(locked)
 	}()
 	select {
