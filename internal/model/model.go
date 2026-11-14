@@ -710,6 +710,37 @@ type CertInfo struct {
 	Error         string    `json:"error,omitempty"` // verification error when Valid is false
 }
 
+// ExpiresWithin reports whether the certificate is close enough to expiry to
+// warn about, given the number of days a person asked to be warned within.
+//
+// A fixed number of days stops working for short-lived certificates: a
+// six-day certificate (Let's Encrypt has issued them since January 2026) is
+// always within fourteen days of expiry, so it would be warned about from
+// the moment it was issued. So when the warning period is at least as long
+// as the certificate's whole lifetime, the warning waits instead until a
+// third of the lifetime is left — two days for a six-day certificate, by
+// when an automatic renewal should long since have replaced it. A warning
+// period shorter than the lifetime is taken as meant, whatever it is. A
+// certificate without a usable lifetime is judged on days alone.
+func (c *CertInfo) ExpiresWithin(warnDays int) bool {
+	if c == nil {
+		return false
+	}
+	return c.DaysRemaining <= c.EffectiveWarnDays(warnDays)
+}
+
+// EffectiveWarnDays is the warning threshold ExpiresWithin applies.
+func (c *CertInfo) EffectiveWarnDays(warnDays int) int {
+	if c == nil || c.NotBefore.IsZero() || !c.NotAfter.After(c.NotBefore) {
+		return warnDays
+	}
+	lifetime := c.NotAfter.Sub(c.NotBefore).Hours() / 24
+	if float64(warnDays) < lifetime {
+		return warnDays
+	}
+	return int(lifetime / 3)
+}
+
 // CheckState is the live state of a check maintained by the engine.
 type CheckState struct {
 	CheckID             int64      `json:"checkId"`

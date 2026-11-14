@@ -193,7 +193,8 @@ func expiryPhrase(days int) string {
 }
 
 // certWarnings returns the degraded reasons for a certificate: expiring soon
-// or already expired.
+// (see model.CertInfo.ExpiresWithin for short-lived certificates) or already
+// expired.
 func certWarnings(info *model.CertInfo, warnDays int) []string {
 	if info == nil {
 		return nil
@@ -204,7 +205,7 @@ func certWarnings(info *model.CertInfo, warnDays int) []string {
 	switch {
 	case info.DaysRemaining < 0:
 		return []string{fmt.Sprintf("Certificate expired %d days ago", -info.DaysRemaining)}
-	case info.DaysRemaining <= warnDays:
+	case info.ExpiresWithin(warnDays):
 		return []string{fmt.Sprintf("Certificate expires in %d days", info.DaysRemaining)}
 	}
 	return nil

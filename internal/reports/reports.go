@@ -139,7 +139,7 @@ func Generate(ctx context.Context, st *store.Store, d model.ReportDefinition, fr
 			out.Rows = append(out.Rows, r)
 			if v, ok := last[c.ID]; ok && v.Details.Cert != nil {
 				info := v.Details.Cert
-				if info.DaysRemaining <= 30 {
+				if info.ExpiresWithin(30) {
 					out.Certs = append(out.Certs, cert{Node: n.Name, Check: c.Name, Expires: info.NotAfter.Format(time.RFC1123), Days: info.DaysRemaining})
 				}
 			}

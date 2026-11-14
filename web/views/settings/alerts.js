@@ -47,7 +47,7 @@ export function create(shell) {
           h('div', { class: 'form-grid-3' },
             numField(a, 'failureThreshold', 'Failures before alerting', { min: 1, help: 'Consecutive failed runs before a check is down.' }),
             numField(a, 'cooldownMinutes', 'Cooldown', { unitLabel: 'min', help: 'Minimum time between repeated alerts for the same check.' }),
-            numField(a, 'certWarnDays', 'Certificate warning', { unitLabel: 'days', min: 1, help: 'Warn when a certificate expires within this many days. A short-lived certificate (a few days) is warned about once a third of its life is left instead.' })),
+            numField(a, 'certWarnDays', 'Certificate warning', { unitLabel: 'days', min: 1, help: 'Warn when a certificate expires within this many days. A certificate whose whole life is shorter than this (a six-day one, say) is warned about once a third of its life is left instead.' })),
           h('div', { class: 'form-grid' },
             numField(a, 'recheckSeconds', 'Re-check a failing check after', { unitLabel: 'seconds', max: 3600, help: 'After a failure, run the check again this soon instead of waiting its full interval, until it is confirmed down or passes. Used only when shorter than the check\'s interval. 0 = off.' })),
           h('div', { class: 'stack-sm' }, notifyRecovery, notifyWarnings, flapDetection),

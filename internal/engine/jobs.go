@@ -642,7 +642,7 @@ func (e *Engine) Overview(ctx context.Context) (Overview, error) {
 				cv.LastResult = &rc
 				if rc.Details.Cert != nil && c.Enabled && n.Enabled {
 					warnDays := effectiveCertWarnDays(c, e.settings)
-					if rc.Details.Cert.DaysRemaining <= warnDays || !rc.Details.Cert.Valid {
+					if rc.Details.Cert.ExpiresWithin(warnDays) || !rc.Details.Cert.Valid {
 						ov.CertWarnings = append(ov.CertWarnings, CertWarning{NodeID: n.ID, NodeName: n.Name, CheckID: c.ID, CheckName: c.Name, DaysRemaining: rc.Details.Cert.DaysRemaining, NotAfter: rc.Details.Cert.NotAfter, Subject: rc.Details.Cert.Subject, Valid: rc.Details.Cert.Valid, Error: rc.Details.Cert.Error})
 					}
 				}

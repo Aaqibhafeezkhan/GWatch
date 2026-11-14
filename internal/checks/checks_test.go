@@ -199,8 +199,10 @@ func TestHTTPSSelfSignedCertificate(t *testing.T) {
 		t.Errorf("status = %s warnings=%v", res.Status, res.Warnings)
 	}
 
-	// A huge warn window turns the far-future test certificate into a warning.
-	res = run(t, httpCheck(model.CheckHTTP, srv.URL, model.CheckConfig{IgnoreTLSErrors: true, CertWarnDays: 100000}), Options{})
+	// A huge warn window (still shorter than the certificate's lifetime, see
+	// model.CertInfo.ExpiresWithin) turns the far-future test certificate
+	// into a warning.
+	res = run(t, httpCheck(model.CheckHTTP, srv.URL, model.CheckConfig{IgnoreTLSErrors: true, CertWarnDays: 30000}), Options{})
 	if res.Status != model.StatusDegraded || len(res.Warnings) == 0 || !strings.HasPrefix(res.Warnings[0], "Certificate expires in ") {
 		t.Errorf("expected expiry warning, got status=%s warnings=%v", res.Status, res.Warnings)
 	}
@@ -614,7 +616,9 @@ func TestCertCheck(t *testing.T) {
 	if !res.Success || res.Status != model.StatusUp || !strings.HasPrefix(res.Message, "Not verified, expires in ") {
 		t.Errorf("ignore TLS errors: %+v", res)
 	}
-	res = run(t, httpCheck(model.CheckCert, host+":"+port, model.CheckConfig{IgnoreTLSErrors: true, CertWarnDays: 100000}), Options{})
+	// The test certificate is valid until 2084: a warning period shorter than
+	// its lifetime is taken as meant (see model.CertInfo.ExpiresWithin).
+	res = run(t, httpCheck(model.CheckCert, host+":"+port, model.CheckConfig{IgnoreTLSErrors: true, CertWarnDays: 30000}), Options{})
 	if res.Status != model.StatusDegraded || len(res.Warnings) == 0 {
 		t.Errorf("expiry warning: %+v", res)
 	}

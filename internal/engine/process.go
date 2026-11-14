@@ -181,7 +181,7 @@ func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r mod
 		certWarn := false
 		if r.Details.Cert != nil {
 			warnDays := effectiveCertWarnDays(c, settings)
-			certWarn = r.Details.Cert.DaysRemaining <= warnDays || !r.Details.Cert.Valid
+			certWarn = r.Details.Cert.ExpiresWithin(warnDays) || !r.Details.Cert.Valid
 		}
 		if certWarn && !st.CertWarningActive {
 			st.CertWarningActive = true
