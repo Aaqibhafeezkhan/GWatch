@@ -141,7 +141,11 @@ func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r mod
 			st.Status = model.StatusDown
 			st.LastChangeAt = ptrTime(now)
 			st.WarningActive = false
-			ev(model.EventDown, "Down", failureDetail(r, st.ConsecutiveFailures), nil)
+			detail := failureDetail(r, st.ConsecutiveFailures)
+			if hint := dnsStageHint(c, r); hint != "" {
+				detail += " " + hint
+			}
+			ev(model.EventDown, "Down", detail, nil)
 			evaluateDown = true
 		} else if st.Status == model.StatusDown && !st.AlertActive {
 			// Still down and no notification was sent yet (suppressed): re-evaluate,
@@ -489,6 +493,22 @@ func failureDetail(r model.Result, failures int) string {
 	return fmt.Sprintf("%s (%d consecutive failures)", msg, failures)
 }
 
+// dnsStageHint explains a failure that happened while looking up the
+// target's name, before the target itself was contacted. Brief resolver
+// trouble is one of the commonest causes of false alarms in monitors like
+// this one, and "the website is down" reads very differently from "the name
+// could not be looked up". It is empty for anything else, and for a DNS
+// check, whose subject the lookup is.
+func dnsStageHint(c model.Check, r model.Result) string {
+	if r.Success || c.Type == model.CheckDNS {
+		return ""
+	}
+	if !strings.HasPrefix(r.Error, "DNS lookup failed") && !strings.HasPrefix(r.Message, "DNS lookup failed") {
+		return ""
+	}
+	return "The name could not be looked up, so the target itself was never contacted. If several checks fail like this at once, the DNS server is the likelier cause."
+}
+
 func suppressLabel(reason string) string {
 	switch reason {
 	case "dependency":
@@ -694,6 +714,9 @@ func (e *Engine) newMail(kind string, c model.Check, n model.Node, r model.Resul
 	}
 	if r.Error != "" {
 		details["Error"] = r.Error
+	}
+	if hint := dnsStageHint(c, r); hint != "" {
+		details["Failed at"] = hint
 	}
 	if r.LatencyMS != nil {
 		details["Latency"] = fmt.Sprintf("%.1f ms", *r.LatencyMS)

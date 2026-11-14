@@ -80,3 +80,16 @@ func TestFailingCheckIsConfirmedSooner(t *testing.T) {
 		t.Fatalf("a check that is down waits its interval: %s", got)
 	}
 }
+
+func TestDNSStageHint(t *testing.T) {
+	failed := model.Result{Error: "DNS lookup failed: nas.local not found"}
+	if dnsStageHint(model.Check{Type: model.CheckHTTP}, failed) == "" {
+		t.Error("an HTTP check that failed at the lookup should say so")
+	}
+	if dnsStageHint(model.Check{Type: model.CheckDNS}, failed) != "" {
+		t.Error("a DNS check's subject is the lookup; no hint")
+	}
+	if dnsStageHint(model.Check{Type: model.CheckHTTP}, model.Result{Error: "connection refused"}) != "" {
+		t.Error("only lookup failures get the hint")
+	}
+}
