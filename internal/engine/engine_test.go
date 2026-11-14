@@ -348,6 +348,9 @@ func TestSchedulerRunsDueChecks(t *testing.T) {
 		defer net.mu.Unlock()
 		return net.runs[cid] >= 1
 	})
+	// The state is committed once the result has been written, which
+	// happens after the run returns (and outside the engine lock, #210).
+	waitFor(t, func() bool { s, _ := e.State(cid); return s.LastRunAt != nil })
 	s, _ := e.State(cid)
 	if s.NextRunAt == nil || s.NextRunAt.Sub(*s.LastRunAt) < 9*time.Second {
 		t.Fatalf("next run not scheduled: %+v", s)

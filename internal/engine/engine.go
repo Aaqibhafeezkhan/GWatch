@@ -76,7 +76,15 @@ type Engine struct {
 	checks   map[int64]model.Check
 	states   map[int64]*model.CheckState
 	mailDone map[int64]chan struct{}
-	mailSem  chan struct{} // see mailSlots
+	// writing marks a check whose result is being written outside the lock;
+	// see process. writeFails counts each check's consecutive failed writes
+	// and writeErr/writeFailSince describe the newest run of failures, for
+	// Monitor health; see writestate.go.
+	writing        map[int64]chan struct{}
+	writeFails     map[int64]int
+	writeErr       string
+	writeFailSince *time.Time
+	mailSem        chan struct{} // see mailSlots
 	// alertGroups are the per-node alert groups whose window is open, and
 	// digestMu serialises the warning digest; see alertbatch.go.
 	alertGroups  map[groupKey]*alertGroup
@@ -160,6 +168,8 @@ func New(st *store.Store, log *logging.Logger, opts Options) *Engine {
 		states:       map[int64]*model.CheckState{},
 		running:      map[int64]bool{},
 		mailDone:     map[int64]chan struct{}{},
+		writing:      map[int64]chan struct{}{},
+		writeFails:   map[int64]int{},
 		mailSem:      make(chan struct{}, mailSlots),
 		inflight:     map[int64]*checkFlight{},
 		recordResult: st.RecordResult,

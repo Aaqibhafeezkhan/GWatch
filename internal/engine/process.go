@@ -55,7 +55,19 @@ type downDecision struct {
 func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r model.Result, depth int) (model.Result, error) {
 	now := r.Timestamp
 	e.mu.Lock()
-	if pending := e.mailDone[c.ID]; pending != nil {
+	// Wait for anything still in flight for this check: the delivery of its
+	// previous alert (a recovery must not overtake the down alert), and the
+	// write of its previous result, which happens outside the lock (#210) —
+	// staging on top of a state that has not been committed yet would count
+	// the same failure twice.
+	for {
+		pending := e.mailDone[c.ID]
+		if pending == nil {
+			pending = e.writing[c.ID]
+		}
+		if pending == nil {
+			break
+		}
 		e.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -341,15 +353,54 @@ func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r mod
 	}
 
 	snapshot := *st
-	stored, err := e.recordResult(ctx, r, snapshot)
-	if err == nil {
-		*live = snapshot
-	}
+	// The write happens outside the engine lock (#210): it is a transaction
+	// with an fsync, and holding the lock through it stalled the scheduler,
+	// the overview and every other check's result behind one slow disk. The
+	// staged copy is committed to the live map only once the write succeeds,
+	// as before; writing[c.ID] keeps another result for this check from
+	// staging in the meantime.
+	writing := make(chan struct{})
+	e.writing[c.ID] = writing
+	record := e.recordResult
 	e.mu.Unlock()
+	stored, err := record(ctx, r, snapshot)
+	e.mu.Lock()
+	delete(e.writing, c.ID)
+	close(writing)
 	if err != nil {
-		e.log.Errorf("record result for check %d: %v", c.ID, err)
+		// The state is deliberately not advanced, so the alerting decision is
+		// made again on the next result. But the check is not due again on
+		// the next tick either: with a full disk or an unreachable database
+		// that re-ran every check about once a second (#211).
+		wait := e.noteWriteFailureLocked(c.ID, err, time.Now())
+		if e.states[c.ID] == live {
+			next := time.Now().Add(wait)
+			live.NextRunAt = &next
+		}
+		e.mu.Unlock()
+		e.log.Errorf("record result for check %d: %v (trying again in %s)", c.ID, err, humanDuration(wait))
 		return r, err
 	}
+	e.noteWriteSuccessLocked(c.ID)
+	if e.states[c.ID] == live {
+		if reflect.DeepEqual(*live, before) {
+			*live = snapshot
+		} else {
+			// Something else changed this check's state while the result was
+			// being written — a silence, a pause, an expired silence. Its
+			// change is kept and this result's changes are laid over the
+			// fields it did not touch; the stored row is then brought in line,
+			// since the two writes may have reached the database in either
+			// order.
+			merged := mergeState(before, snapshot, *live)
+			*live = merged
+			if serr := e.store.SaveState(ctx, merged); serr != nil {
+				e.log.Errorf("save merged state for check %d: %v", c.ID, serr)
+			}
+			snapshot = merged
+		}
+	}
+	e.mu.Unlock()
 	for _, evt := range events {
 		e.recordEvent(evt)
 	}

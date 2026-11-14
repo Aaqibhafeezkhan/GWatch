@@ -1537,6 +1537,14 @@ type Health struct {
 	ListenAddress        string          `json:"listenAddress"`
 	Platform             string          `json:"platform"`
 	Ping                 PingStatus      `json:"ping"`
+	// ResultWriteFailures is how many checks could not save their newest
+	// result (a full disk, a locked database, an unreachable database
+	// server). While it is above zero, results are not being kept and those
+	// checks are retried with a growing wait; ResultWriteError is the newest
+	// error and ResultWriteFailingSince when the failures began.
+	ResultWriteFailures     int        `json:"resultWriteFailures"`
+	ResultWriteError        string     `json:"resultWriteError,omitempty"`
+	ResultWriteFailingSince *time.Time `json:"resultWriteFailingSince,omitempty"`
 }
 
 // Ways the built-in ping can reach the network, as PingStatus.Auto reports

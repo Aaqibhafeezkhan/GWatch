@@ -466,6 +466,10 @@ func (e *Engine) Health(ctx context.Context) model.Health {
 		ListenAddress:    e.opts.ListenAddr,
 		Platform:         runtime.GOOS + "/" + runtime.GOARCH,
 		Ping:             ping,
+
+		ResultWriteFailures:     len(e.writeFails),
+		ResultWriteError:        e.writeErr,
+		ResultWriteFailingSince: e.writeFailSince,
 	}
 	for id, c := range e.checks {
 		h.ChecksTotal++
