@@ -47,6 +47,16 @@ local `httptest` servers and a fake in-process DNS resolver, and ping output is 
 from fixtures, so the tests are deterministic on a CI runner. See the [`Makefile`](../../Makefile)
 for what each target actually runs.
 
+Tests about timing — retries, backoff, the scheduler's ticks, the alert outbox — use
+[`testing/synctest`](https://pkg.go.dev/testing/synctest) (Go 1.25 and later) rather than
+short sleeps and real waits. Inside `synctest.Test` the clock is fake and moves only when
+every goroutine in the bubble is waiting, so the real 15-second e-mail retry or a minute
+of scheduler ticks takes no time, and the result does not depend on how busy the machine
+is. A whole engine, store included, can run in a bubble (see
+`internal/engine/writestate_test.go`); network I/O does not advance the fake clock, so
+keep `httptest` servers out of these tests. Prefer this for new timing tests, and move an
+old sleep-based one over when it is next touched or turns out to be flaky.
+
 By default every test runs on SQLite. The store, backup, API, engine and hostmon suites
 also run against a PostgreSQL or MySQL server when `GWATCH_TEST_DB` and a DSN are set —
 see [`DATABASE.md`](../DATABASE.md#for-developers); CI does this on the Linux job with

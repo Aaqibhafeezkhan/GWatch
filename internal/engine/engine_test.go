@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jxburros/GWatch/internal/checks"
@@ -460,44 +461,61 @@ func TestStopIsBounded(t *testing.T) {
 	}
 }
 
-// #99: a failed alert e-mail is tried once more, and no more than mailSlots
-// are ever being sent at once.
+// #99: a failed alert e-mail is tried once more, after mailRetryAfter, and no
+// more than mailSlots are ever being sent at once.
+//
+// It runs in a testing/synctest bubble, whose clock moves only when every
+// goroutine in it is waiting: the real 15-second retry and each e-mail's
+// second of sending take no time, and what the test sees no longer depends on
+// how busy the machine running it is.
 func TestAlertMailRetriesAndIsBounded(t *testing.T) {
-	e, _, _, _ := setup(t)
-	mailRetryAfter = 10 * time.Millisecond
-	var mu sync.Mutex
-	calls, inFlight, peak := 0, 0, 0
-	e.opts.Send = func(context.Context, model.SMTPSettings, mailer.Message) error {
-		mu.Lock()
-		calls++
-		first := calls == 1
-		inFlight++
-		peak = max(peak, inFlight)
-		mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
-		mu.Lock()
-		inFlight--
-		mu.Unlock()
-		if first {
-			return errors.New("451 greylisted")
+	synctest.Test(t, func(t *testing.T) {
+		e, _, _, _ := setup(t)
+		mailRetryAfter = 15 * time.Second
+		var mu sync.Mutex
+		calls, inFlight, peak := 0, 0, 0
+		var sentAt []time.Time
+		e.opts.Send = func(context.Context, model.SMTPSettings, mailer.Message) error {
+			mu.Lock()
+			calls++
+			first := calls == 1
+			sentAt = append(sentAt, time.Now())
+			inFlight++
+			peak = max(peak, inFlight)
+			mu.Unlock()
+			time.Sleep(time.Second) // an SMTP conversation
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+			if first {
+				return errors.New("451 greylisted")
+			}
+			return nil
 		}
-		return nil
-	}
-	if err := e.deliverMail(model.SMTPSettings{}, mailer.Message{}); err != nil {
-		t.Fatalf("the retry did not go through: %v", err)
-	}
-	if calls != 2 {
-		t.Fatalf("calls = %d, want 2", calls)
-	}
-	var wg sync.WaitGroup
-	for i := 0; i < 12; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); _ = e.deliverMail(model.SMTPSettings{}, mailer.Message{}) }()
-	}
-	wg.Wait()
-	if peak > mailSlots {
-		t.Fatalf("%d e-mails were sent at once, want at most %d", peak, mailSlots)
-	}
+		if err := e.deliverMail(model.SMTPSettings{}, mailer.Message{}); err != nil {
+			t.Fatalf("the retry did not go through: %v", err)
+		}
+		if calls != 2 {
+			t.Fatalf("calls = %d, want 2", calls)
+		}
+		if gap := sentAt[1].Sub(sentAt[0]); gap != 16*time.Second {
+			t.Fatalf("the retry came %s after the first attempt, want the second it took plus 15 s", gap)
+		}
+		var wg sync.WaitGroup
+		start := time.Now()
+		for i := 0; i < 12; i++ {
+			wg.Add(1)
+			go func() { defer wg.Done(); _ = e.deliverMail(model.SMTPSettings{}, mailer.Message{}) }()
+		}
+		wg.Wait()
+		if peak > mailSlots {
+			t.Fatalf("%d e-mails were sent at once, want at most %d", peak, mailSlots)
+		}
+		// Twelve one-second e-mails through three slots take four seconds.
+		if took := time.Since(start); took != 4*time.Second {
+			t.Fatalf("twelve e-mails took %s, want 4s", took)
+		}
+	})
 }
 
 // #107: the backfill is done in day-sized pieces whose boundaries line up

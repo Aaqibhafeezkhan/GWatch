@@ -3,9 +3,12 @@ package engine
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/jxburros/GWatch/internal/mailer"
 	"github.com/jxburros/GWatch/internal/model"
 )
 
@@ -153,4 +156,82 @@ func TestMergeStateKeepsTheLaterChange(t *testing.T) {
 	if got.Status != model.StatusPaused || got.SilencedUntil == nil || got.ConsecutiveFailures != 1 || got.LastMessage != "timed out" {
 		t.Fatalf("merge: %+v", got)
 	}
+}
+
+// #211 end to end, on the real scheduler: in a synctest bubble the scheduler's
+// one-second ticker runs on a fake clock, so a minute of it passes in no
+// time and the runs land exactly where the backoff puts them.
+func TestSchedulerBacksOffFailingWrites(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, st, net, _ := setup(t)
+		ctx := context.Background()
+		n, err := st.CreateNode(ctx, model.Node{Name: "NAS", Host: "nas.local", Enabled: true, Checks: []model.Check{{Name: "Ping", Type: model.CheckPing, Enabled: true, IntervalSeconds: 60, TimeoutSeconds: 1}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.recordResult = func(context.Context, model.Result, model.CheckState) (model.Result, error) {
+			return model.Result{}, errors.New("database or disk is full")
+		}
+		if err := e.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		net.mu.Lock()
+		runs := net.runs[n.Checks[0].ID]
+		net.mu.Unlock()
+		e.Stop()
+		// The first run comes within the first two seconds; then 5, 10 and
+		// 20 s apart: four runs in the minute, not sixty.
+		if runs != 4 {
+			t.Fatalf("%d runs in a minute of failing writes, want 4", runs)
+		}
+	})
+}
+
+// The outbox's own loop, end to end on a fake clock: an alert that could not
+// be sent goes out by itself once e-mail works, at its first retry a minute
+// later.
+func TestOutboxLoopSendsOnceTheChannelWorks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, st, net, mb := setup(t)
+		ctx := context.Background()
+		n, err := st.CreateNode(ctx, model.Node{Name: "Router", Host: "192.168.1.1", Enabled: true, Checks: []model.Check{{Name: "Ping", Type: model.CheckPing, Enabled: true, IntervalSeconds: 600, TimeoutSeconds: 1, FailureThreshold: 1}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var mu sync.Mutex
+		failing := true
+		e.opts.Send = func(ctx context.Context, s model.SMTPSettings, m mailer.Message) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if failing {
+				return errors.New("dial tcp: no route to host")
+			}
+			return mb.send(ctx, s, m)
+		}
+		net.mu.Lock()
+		net.down[n.Checks[0].ID] = true
+		net.mu.Unlock()
+		if err := e.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		if q, _ := st.QueuedAlerts(ctx); len(q) != 1 || mb.count() != 0 {
+			t.Fatalf("the down alert should be waiting: %d queued, %d sent", len(q), mb.count())
+		}
+		mu.Lock()
+		failing = false
+		mu.Unlock()
+		time.Sleep(2 * time.Minute)
+		synctest.Wait()
+		e.Stop()
+		if mb.count() != 1 {
+			t.Fatalf("the waiting alert was not sent: %v", mb.subjects())
+		}
+		if q, _ := st.QueuedAlerts(ctx); len(q) != 0 {
+			t.Fatalf("the outbox should be empty: %+v", q)
+		}
+	})
 }
