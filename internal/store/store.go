@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS rollups (
   avg_jitter_ms REAL,
   avg_loss_pct REAL,
   availability REAL NOT NULL,
+  latency_hist TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (check_id, bucket_seconds, bucket_start)
 );
 CREATE INDEX IF NOT EXISTS idx_rollups_bucket ON rollups(bucket_seconds, bucket_start);
@@ -405,6 +406,10 @@ var addedColumns = []struct{ table, column, ddl string }{
 	{"agents", "collector", "ALTER TABLE agents ADD COLUMN collector INTEGER NOT NULL DEFAULT 0"},
 	{"agents", "collector_allowed", "ALTER TABLE agents ADD COLUMN collector_allowed INTEGER NOT NULL DEFAULT 0"},
 	{"agents", "collector_seen_at", "ALTER TABLE agents ADD COLUMN collector_seen_at TEXT"},
+	// The distribution of a rollup bucket's latencies (internal/latency), so
+	// long ranges can show percentiles and not only the average. Buckets
+	// rolled up before the column existed keep '' and show none.
+	{"rollups", "latency_hist", "ALTER TABLE rollups ADD COLUMN latency_hist TEXT NOT NULL DEFAULT ''"},
 }
 
 // currentSchemaVersion is the schema_version this build expects. Every

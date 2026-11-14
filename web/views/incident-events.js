@@ -18,6 +18,7 @@ const TYPE_GROUPS = [
   { value: 'maintenance_began', label: 'Maintenance began' },
   { value: 'maintenance_ended', label: 'Maintenance ended' },
   { value: 'affected_by_parent', label: 'Affected by parent' },
+  { value: 'flapping', label: 'Flapping' },
   { value: 'rule_fired', label: 'Rules fired & cleared' },
   { value: 'config_changed', label: 'Configuration changes' },
   { value: 'service_started', label: 'Service started' },

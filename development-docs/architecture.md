@@ -4,6 +4,7 @@
 
 <!--
 Set up on 2026-11-10 from the code at 0.8.10 (gwatch-agent 0.8.7, gwatch-mcp 0.1.2),
+updated for 0.8.12 (alert outbox, result writes outside the engine lock, rollup histograms),
 docs/development/DEVELOPMENT.md, docs/API.md, docs/PRIVACY.md, docs/DATABASE.md and
 docs/development/AGENT-DECISIONS.md.
 -->
@@ -74,7 +75,7 @@ Two **separately versioned companions** talk to it over HTTP: `gwatch-agent` (ha
 | `internal/actions`, `internal/mailer` | Automation actions and notification channels; SMTP and alert email |
 | `internal/backup`, `internal/update` | Encrypted backup/restore; signed self-update |
 | `internal/hostmon`, `internal/sysmetrics` | Latest hardware reading per machine; per-platform collectors (Docker, Hyper-V) shared with the agent |
-| `internal/discovery`, `internal/matter`, `internal/reports` | Subnet sweeps; Matter client; availability reports |
+| `internal/discovery`, `internal/matter`, `internal/reports`, `internal/latency` | Subnet sweeps; Matter client; availability reports; mergeable latency histograms for rollups |
 | `internal/svc`, `internal/serviceinstall`, `internal/subprocess`, `internal/logging` | Service hosting (SCM, launchd, systemd/OpenRC/SysV); protected install copy and hardened systemd unit; process running; rotated log |
 | `web/` | The interface: plain HTML/CSS/JS, `//go:embed`ed; `web/views/` per screen; `web/mock.js` demo backend |
 | `cmd/gwatch-agent` | The agent (own `VERSION`, own releases, local control panel) |
@@ -94,8 +95,9 @@ Two **separately versioned companions** talk to it over HTTP: `gwatch-agent` (ha
 ### Engine (`internal/engine`)
 
 **Responsibility:** decides when each check runs, interprets results and turns them into status, incidents, events, notifications and trigger runs.
-**Key behaviour:** dependency suppression checks the parent before blaming a child; suppressed observations are still stored; rules combine status conditions across nodes and run existing trigger actions. The engine holds a global lock while processing; the result write currently happens under it (#210).
+**Key behaviour:** dependency suppression checks the parent before blaming a child; suppressed observations are still stored; rules combine status conditions across nodes and run existing trigger actions; a failing check is re-checked sooner than its interval until confirmed down; flap detection (a weighted share of changes over the last 21 judged states, kept in memory) holds back down alerts while a check flaps. The engine holds a global lock while it stages a result's state, releases it for the result write, and commits the staged state afterwards; another result for the same check waits, and a change made to the check meanwhile is kept by a three-way merge (`writestate.go`).
 **Boundaries:** does not talk HTTP to clients; persists through the store; sends through `actions`/`mailer`.
+**Alert outbox (`outbox.go`):** an alert whose e-mail or channel still fails after the quick retry is stored in `alert_outbox` and retried with backoff (or `Retry-After`) for a day, each destination in order; a queued alert counts as raised. A down alert and its recovery both still waiting are sent as one message, except to incident channels.
 
 ### Checks (`internal/checks`)
 
@@ -103,7 +105,7 @@ Two **separately versioned companions** talk to it over HTTP: `gwatch-agent` (ha
 
 ### Store (`internal/store`)
 
-**Responsibility:** all persistence through a dialect layer (SQLite via modernc.org by default; `-tags sqlite_ncruces` / `sqlite_cgo` alternatives; PostgreSQL via pgx; MySQL/MariaDB). A single queued writer serialises writes (also on PostgreSQL/MySQL today, #212). Raw results are rolled up into coarser summaries and pruned according to retention settings.
+**Responsibility:** all persistence through a dialect layer (SQLite via modernc.org by default; `-tags sqlite_ncruces` / `sqlite_cgo` alternatives; PostgreSQL via pgx; MySQL/MariaDB). A single queued writer serialises writes (also on PostgreSQL/MySQL today, #212). Raw results are rolled up into coarser summaries and pruned according to retention settings. Each rollup bucket also keeps a latency histogram (`internal/latency`, DDSketch-style log bins) built in Go after each rollup statement and written only when the bucket's source is complete; the history API reads percentiles from it.
 
 ### API and policy (`internal/api`)
 
@@ -137,7 +139,8 @@ Two **separately versioned companions** talk to it over HTTP: `gwatch-agent` (ha
 
 ### Failure Points
 
-- A persistent store write failure currently causes checks to re-run at about 1 Hz with no backoff (#211).
+- A persistent store write failure leaves the alerting state unchanged and re-runs the failing check after 5 s, doubling to 5 min; Monitor health reports it (#211).
+- An alert that cannot be delivered waits in the alert outbox rather than being lost; it is given up after a day.
 - A failed update verification, restore or migration stops rather than continuing.
 
 ---
@@ -155,7 +158,8 @@ Two **separately versioned companions** talk to it over HTTP: `gwatch-agent` (ha
 The data directory (Windows `%ProgramData%\GWatch`; Linux `$XDG_DATA_HOME/gwatch` or `~/.local/share/gwatch`, `/var/lib/gwatch` for the packaged service; macOS `~/.local/share/gwatch`) holds `gwatch.db`, `gwatch.key` (mode 0600), `database.json` when a server database is chosen, `logs/` and `backups/`.
 
 - Secrets in the settings table and in `database.json` are sealed with `gwatch.key`; losing the key loses those secrets (backups carry what is needed to restore).
-- Discovery results and the newest hardware readings live in memory only.
+- Discovery results, the newest hardware readings and each check's flap history live in memory only.
+- `alert_outbox` holds only undelivered alerts: rows are deleted on delivery, after a day, or by a restore, and are not carried by backups or `migrate-db`.
 - Schema migrations are applied at start-up on every dialect; `gwatch migrate-db` copies a SQLite install into PostgreSQL/MySQL.
 - Map options are per-browser `localStorage`; the shared map arrangement is stored server-side.
 
@@ -239,7 +243,7 @@ GWatch exposes its own health (Monitor health: service, scheduler, last check, d
 ## 18. Known Tradeoffs and Constraints
 
 - PostgreSQL/MySQL inherit SQLite's single-writer model (#212).
-- The result write is held under the engine lock (#210).
+- `evaluateDownLocked` still reads whether a node's incident is acknowledged under the engine lock (a read, not a write; noted in #210).
 - Windows setup programs are not Authenticode-signed (#120).
 - A Docker install needs `docker exec` to create the first administrator (#271).
 - Re-running the Windows setup program keeps the first install's port and LAN setting (#275).

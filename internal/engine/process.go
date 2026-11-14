@@ -55,7 +55,19 @@ type downDecision struct {
 func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r model.Result, depth int) (model.Result, error) {
 	now := r.Timestamp
 	e.mu.Lock()
-	if pending := e.mailDone[c.ID]; pending != nil {
+	// Wait for anything still in flight for this check: the delivery of its
+	// previous alert (a recovery must not overtake the down alert), and the
+	// write of its previous result, which happens outside the lock (#210) —
+	// staging on top of a state that has not been committed yet would count
+	// the same failure twice.
+	for {
+		pending := e.mailDone[c.ID]
+		if pending == nil {
+			pending = e.writing[c.ID]
+		}
+		if pending == nil {
+			break
+		}
 		e.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -129,7 +141,11 @@ func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r mod
 			st.Status = model.StatusDown
 			st.LastChangeAt = ptrTime(now)
 			st.WarningActive = false
-			ev(model.EventDown, "Down", failureDetail(r, st.ConsecutiveFailures), nil)
+			detail := failureDetail(r, st.ConsecutiveFailures)
+			if hint := dnsStageHint(c, r); hint != "" {
+				detail += " " + hint
+			}
+			ev(model.EventDown, "Down", detail, nil)
 			evaluateDown = true
 		} else if st.Status == model.StatusDown && !st.AlertActive {
 			// Still down and no notification was sent yet (suppressed): re-evaluate,
@@ -169,7 +185,7 @@ func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r mod
 		certWarn := false
 		if r.Details.Cert != nil {
 			warnDays := effectiveCertWarnDays(c, settings)
-			certWarn = r.Details.Cert.DaysRemaining <= warnDays || !r.Details.Cert.Valid
+			certWarn = r.Details.Cert.ExpiresWithin(warnDays) || !r.Details.Cert.Valid
 		}
 		if certWarn && !st.CertWarningActive {
 			st.CertWarningActive = true
@@ -227,6 +243,34 @@ func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r mod
 		if st.Status != newStatus {
 			st.Status = newStatus
 			st.LastChangeAt = ptrTime(now)
+		}
+	}
+
+	// Flapping: one notice when a check starts going down and coming back
+	// again and again, instead of an alert for every change (flap.go). A
+	// check that is still down when it settles is re-evaluated below and
+	// alerted on as usual, since its down alert was held back.
+	if began, ended := updateFlap(st, settings.Alerts.FlapDetection); began {
+		detail := flapDetail(st)
+		ev(model.EventFlapping, "Flapping", detail, nil)
+		if e.canWarn(c, n, st, settings, now) {
+			m := e.newMail("warning", c, n, r, st, settings)
+			m.message = "Flapping: " + detail
+			mails = append(mails, m)
+		}
+	} else if ended {
+		ev(model.EventFlappingEnded, "Stopped flapping", "It has been steady for long enough that alerts are sent as usual again.", nil)
+		if st.Status == model.StatusDown && !st.AlertActive {
+			evaluateDown = true
+		}
+	}
+
+	// A check that has started failing but is not down yet is confirmed
+	// sooner than its interval (Settings › Alerts › re-check), so a real
+	// outage is known in seconds rather than after threshold × interval.
+	if !r.Success && st.Status != model.StatusDown && st.NextRunAt != nil {
+		if wait := recheckAfter(c, settings); wait > 0 {
+			st.NextRunAt = ptrTime(now.Add(wait))
 		}
 	}
 
@@ -341,15 +385,54 @@ func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r mod
 	}
 
 	snapshot := *st
-	stored, err := e.recordResult(ctx, r, snapshot)
-	if err == nil {
-		*live = snapshot
-	}
+	// The write happens outside the engine lock (#210): it is a transaction
+	// with an fsync, and holding the lock through it stalled the scheduler,
+	// the overview and every other check's result behind one slow disk. The
+	// staged copy is committed to the live map only once the write succeeds,
+	// as before; writing[c.ID] keeps another result for this check from
+	// staging in the meantime.
+	writing := make(chan struct{})
+	e.writing[c.ID] = writing
+	record := e.recordResult
 	e.mu.Unlock()
+	stored, err := record(ctx, r, snapshot)
+	e.mu.Lock()
+	delete(e.writing, c.ID)
+	close(writing)
 	if err != nil {
-		e.log.Errorf("record result for check %d: %v", c.ID, err)
+		// The state is deliberately not advanced, so the alerting decision is
+		// made again on the next result. But the check is not due again on
+		// the next tick either: with a full disk or an unreachable database
+		// that re-ran every check about once a second (#211).
+		wait := e.noteWriteFailureLocked(c.ID, err, time.Now())
+		if e.states[c.ID] == live {
+			next := time.Now().Add(wait)
+			live.NextRunAt = &next
+		}
+		e.mu.Unlock()
+		e.log.Errorf("record result for check %d: %v (trying again in %s)", c.ID, err, humanDuration(wait))
 		return r, err
 	}
+	e.noteWriteSuccessLocked(c.ID)
+	if e.states[c.ID] == live {
+		if reflect.DeepEqual(*live, before) {
+			*live = snapshot
+		} else {
+			// Something else changed this check's state while the result was
+			// being written — a silence, a pause, an expired silence. Its
+			// change is kept and this result's changes are laid over the
+			// fields it did not touch; the stored row is then brought in line,
+			// since the two writes may have reached the database in either
+			// order.
+			merged := mergeState(before, snapshot, *live)
+			*live = merged
+			if serr := e.store.SaveState(ctx, merged); serr != nil {
+				e.log.Errorf("save merged state for check %d: %v", c.ID, serr)
+			}
+			snapshot = merged
+		}
+	}
+	e.mu.Unlock()
 	for _, evt := range events {
 		e.recordEvent(evt)
 	}
@@ -410,10 +493,28 @@ func failureDetail(r model.Result, failures int) string {
 	return fmt.Sprintf("%s (%d consecutive failures)", msg, failures)
 }
 
+// dnsStageHint explains a failure that happened while looking up the
+// target's name, before the target itself was contacted. Brief resolver
+// trouble is one of the commonest causes of false alarms in monitors like
+// this one, and "the website is down" reads very differently from "the name
+// could not be looked up". It is empty for anything else, and for a DNS
+// check, whose subject the lookup is.
+func dnsStageHint(c model.Check, r model.Result) string {
+	if r.Success || c.Type == model.CheckDNS {
+		return ""
+	}
+	if !strings.HasPrefix(r.Error, "DNS lookup failed") && !strings.HasPrefix(r.Message, "DNS lookup failed") {
+		return ""
+	}
+	return "The name could not be looked up, so the target itself was never contacted. If several checks fail like this at once, the DNS server is the likelier cause."
+}
+
 func suppressLabel(reason string) string {
 	switch reason {
 	case "dependency":
 		return "parent is down"
+	case "flapping":
+		return "flapping"
 	}
 	return reason
 }
@@ -437,6 +538,8 @@ func suppressDetail(d downDecision, st *model.CheckState, s model.Settings) stri
 		return fmt.Sprintf("An alert for this check was sent less than %d minutes ago (cooldown); no email was sent.", d.cooldown)
 	case "disabled":
 		return "Email alerts are disabled for this check."
+	case "flapping":
+		return "This check keeps going down and coming back, so its alerts are held back until it settles; no email was sent."
 	}
 	return "No email was sent."
 }
@@ -454,6 +557,9 @@ func (e *Engine) evaluateDownLocked(c model.Check, n model.Node, st *model.Check
 	}
 	if st.SilencedUntil != nil && st.SilencedUntil.After(now) {
 		return downDecision{reason: "silenced"}
+	}
+	if st.Flapping {
+		return downDecision{reason: "flapping"}
 	}
 	if n.DependsOnNode != nil {
 		pc, pn := e.parentDownLocked(n)
@@ -609,6 +715,9 @@ func (e *Engine) newMail(kind string, c model.Check, n model.Node, r model.Resul
 	if r.Error != "" {
 		details["Error"] = r.Error
 	}
+	if hint := dnsStageHint(c, r); hint != "" {
+		details["Failed at"] = hint
+	}
 	if r.LatencyMS != nil {
 		details["Latency"] = fmt.Sprintf("%.1f ms", *r.LatencyMS)
 	}
@@ -659,9 +768,10 @@ func (e *Engine) newMail(kind string, c model.Check, n model.Node, r model.Resul
 // without repeating any of those rules.
 //
 // A down alert counts as delivered when the e-mail or at least one channel
-// got through. Only when nothing did is the alert re-armed (failedMail), so
-// the next failing result tries again; re-arming after a failed e-mail while
-// Slack or PagerDuty already had it would page those channels twice.
+// got through, or is waiting in the outbox to be sent again (outbox.go).
+// Only when neither is true is the alert re-armed (failedMail), so the next
+// failing result tries again; re-arming after a failed e-mail while Slack or
+// PagerDuty already had it would page those channels twice.
 func (e *Engine) sendMail(m mailTask) {
 	e.mu.Lock()
 	s := e.settings
@@ -691,7 +801,15 @@ func (e *Engine) sendMail(m mailTask) {
 		defer e.wg.Done()
 		defer e.releaseMailDone(done, m)
 		label := alertLabel(m.kind)
-		delivered := false
+		raised := time.Now()
+		backlog := e.backlog()
+		delivered, queued := false, false
+		if email && backlog[emailTarget] {
+			// Earlier alerts are still waiting for e-mail to work again;
+			// this one goes behind them rather than overtaking them.
+			queued = e.outboxAlert(m, emailTarget, raised, "", 0) || queued
+			email = false
+		}
 		if email {
 			err := e.deliverMail(s.Alerts.SMTP, msg)
 			e.mu.Lock()
@@ -704,8 +822,13 @@ func (e *Engine) sendMail(m mailTask) {
 			e.mu.Unlock()
 			if err != nil {
 				e.log.Errorf("send %s email for %s/%s: %v", m.kind, m.node.Name, m.check.Name, err)
+				detail := err.Error()
+				if e.outboxAlert(m, emailTarget, raised, err.Error(), 0) {
+					queued = true
+					detail += " " + queuedNote
+				}
 				e.recordEvent(model.Event{Type: model.EventAlertFailed, NodeID: ptrInt64(m.node.ID), CheckID: ptrInt64(m.check.ID), NodeName: m.node.Name, CheckName: m.check.Name,
-					Title: label + " email failed", Detail: err.Error()})
+					Title: label + " email failed", Detail: detail})
 			} else {
 				delivered = true
 				e.recordEvent(model.Event{Type: model.EventAlertSent, NodeID: ptrInt64(m.node.ID), CheckID: ptrInt64(m.check.ID), NodeName: m.node.Name, CheckName: m.check.Name,
@@ -713,14 +836,51 @@ func (e *Engine) sendMail(m mailTask) {
 			}
 		}
 		for _, ch := range channels {
-			if e.deliverChannel(ch, m, s.General.InstanceName, label) {
+			switch e.channelOrQueue(ch, m, s.General.InstanceName, label, raised, backlog) {
+			case sentNow:
 				delivered = true
+			case sentLater:
+				queued = true
 			}
 		}
-		if !delivered {
+		// An alert waiting in the outbox counts as raised: re-arming it as
+		// well would send it twice once the destination works again.
+		if !delivered && !queued {
 			e.failedMail(m)
 		}
 	}()
+}
+
+// queuedNote ends the timeline entry of an alert that failed and is now
+// waiting in the outbox.
+const queuedNote = "GWatch will keep trying to send it for a day, and say when it was raised."
+
+// Outcomes of channelOrQueue.
+const (
+	notSent = iota
+	sentNow
+	sentLater // waiting in the outbox
+)
+
+// channelOrQueue sends an alert to one channel, or puts it in the outbox:
+// straight away when earlier alerts are already waiting for the channel, or
+// when sending fails.
+func (e *Engine) channelOrQueue(ch model.AlertChannel, m mailTask, instance, label string, raised time.Time, backlog map[string]bool) int {
+	target := channelTarget(ch.ID)
+	if ch.ID != "" && backlog[target] {
+		if e.outboxAlert(m, target, raised, "", 0) {
+			return sentLater
+		}
+		return notSent
+	}
+	res := e.deliverChannel(ch, m, instance, label)
+	if res.OK {
+		return sentNow
+	}
+	if ch.ID != "" && e.outboxAlert(m, target, raised, res.Error, res.RetryAfter) {
+		return sentLater
+	}
+	return notSent
 }
 
 // alertLabel is how an alert of a kind is named in the timeline.
@@ -803,7 +963,7 @@ func alertVars(m mailTask, instance, channel string) actions.Vars {
 // deliverChannel runs one "also notify" channel for an alert, through the
 // same slots as alert e-mails and with the same single retry, and records the
 // outcome in the timeline. It reports whether the channel took the alert.
-func (e *Engine) deliverChannel(ch model.AlertChannel, m mailTask, instance, label string) bool {
+func (e *Engine) deliverChannel(ch model.AlertChannel, m mailTask, instance, label string) model.ActionResult {
 	name := ch.Name
 	if strings.TrimSpace(name) == "" {
 		name = string(ch.Action.Type)
@@ -820,7 +980,9 @@ func (e *Engine) deliverChannel(ch model.AlertChannel, m mailTask, instance, lab
 		return e.Actions().Run(work, ch.Action, vars)
 	}
 	res := attempt()
-	if !res.OK && mailRetryAfter > 0 && work.Err() == nil {
+	// A service that asked to be left alone for longer than the quick retry
+	// waits is not asked again now; the outbox waits as long as it said.
+	if !res.OK && mailRetryAfter > 0 && work.Err() == nil && res.RetryAfter <= mailRetryAfter {
 		select {
 		case <-time.After(mailRetryAfter):
 			res = attempt()
@@ -842,13 +1004,17 @@ func (e *Engine) deliverChannel(ch model.AlertChannel, m mailTask, instance, lab
 	for _, t := range about {
 		ev := model.Event{NodeID: ptrInt64(t.node.ID), CheckID: ptrInt64(t.check.ID), NodeName: t.node.Name, CheckName: t.check.Name}
 		if !res.OK {
-			ev.Type, ev.Title, ev.Detail = model.EventAlertFailed, fmt.Sprintf("%s to %s failed", label, name), firstLine(res.Error)
+			detail := firstLine(res.Error)
+			if ch.ID != "" {
+				detail += " " + queuedNote
+			}
+			ev.Type, ev.Title, ev.Detail = model.EventAlertFailed, fmt.Sprintf("%s to %s failed", label, name), detail
 		} else {
 			ev.Type, ev.Title, ev.Detail = model.EventAlertSent, fmt.Sprintf("%s sent to %s", label, name), fmt.Sprintf("%s — %s", ch.Action.Type, firstLine(res.Output))
 		}
 		e.recordEvent(ev)
 	}
-	return res.OK
+	return res
 }
 
 // TestAlertChannel sends a sample alert through one "also notify" channel,
@@ -980,6 +1146,21 @@ func (e *Engine) Silence(ctx context.Context, checkID int64, d time.Duration) (m
 	// look at it, and counts again once the silence is lifted.
 	e.evaluateRules(ctx, ptrInt64(c.ID))
 	return snapshot, nil
+}
+
+// recheckAfter is how soon a failing check that is not down yet runs again,
+// or 0 to wait its ordinary interval: when the re-check is off, longer than
+// the interval, or pointless because one failure already makes it down.
+func recheckAfter(c model.Check, s model.Settings) time.Duration {
+	threshold := c.FailureThreshold
+	if threshold <= 0 {
+		threshold = s.Alerts.FailureThreshold
+	}
+	secs := s.Alerts.RecheckSeconds
+	if threshold <= 1 || secs <= 0 || secs >= c.IntervalSeconds {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func effectiveCertWarnDays(c model.Check, s model.Settings) int {

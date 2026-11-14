@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jxburros/GWatch/internal/latency"
 	"github.com/jxburros/GWatch/internal/model"
 )
 
@@ -72,7 +73,7 @@ func (s *Store) RollupFromRaw(ctx context.Context, from, to time.Time) (int64, e
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	return n, nil
+	return n, s.histFromRaw(ctx, fromB, toB)
 }
 
 // RollupUp aggregates smaller buckets into larger ones for [from, to).
@@ -161,7 +162,7 @@ func (s *Store) rollupRange(ctx context.Context, srcBucket, dstBucket int, fromB
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	return n, nil
+	return n, s.histUp(ctx, srcBucket, dstBucket, fromB, toB)
 }
 
 // DeleteResultsBefore removes raw results older than t.
@@ -274,7 +275,7 @@ func (s *Store) Counts(ctx context.Context) (raw, r5m, r1h, r1d, events int64, e
 
 // RollupsBetween returns buckets of a size for a check in [from, to).
 func (s *Store) RollupsBetween(ctx context.Context, checkID int64, bucket int, from, to time.Time) ([]model.Rollup, error) {
-	rows, err := s.query(ctx, `SELECT `+rollupCols+`
+	rows, err := s.query(ctx, `SELECT `+rollupCols+`, latency_hist
 		FROM rollups WHERE check_id = ? AND bucket_seconds = ? AND bucket_start >= ? AND bucket_start < ? ORDER BY bucket_start`, checkID, bucket, from.Unix(), to.Unix())
 	if err != nil {
 		return nil, err
@@ -285,11 +286,15 @@ func (s *Store) RollupsBetween(ctx context.Context, checkID int64, bucket int, f
 		var r model.Rollup
 		var start int64
 		var min, max, avg, jit, loss sql.NullFloat64
-		if err := rows.Scan(&r.CheckID, &r.BucketSecs, &start, &r.Count, &r.SuccessCount, &r.FailCount, &min, &max, &avg, &jit, &loss, &r.Availability); err != nil {
+		if err := rows.Scan(&r.CheckID, &r.BucketSecs, &start, &r.Count, &r.SuccessCount, &r.FailCount, &min, &max, &avg, &jit, &loss, &r.Availability, &r.LatencyHist); err != nil {
 			return nil, err
 		}
 		r.BucketStart = time.Unix(start, 0).Local()
 		r.MinMS, r.MaxMS, r.AvgMS, r.AvgJitterMS, r.AvgLossPct = floatPtr(min), floatPtr(max), floatPtr(avg), floatPtr(jit), floatPtr(loss)
+		if r.LatencyHist != "" {
+			p := latency.Parse(r.LatencyHist).Percentiles()
+			r.P50MS, r.P95MS, r.P99MS = p.P50, p.P95, p.P99
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -404,6 +409,9 @@ func (s *Store) History(ctx context.Context, check model.Check, nodeName string,
 			p := model.HistoryPoint{Timestamp: r.Timestamp, Count: 1, Availability: 100}
 			if r.Success {
 				p.AvgMS, p.MinMS, p.MaxMS = r.LatencyMS, r.MinMS, r.MaxMS
+				// One result is its own percentile; the range's are in
+				// the summary.
+				p.P50MS, p.P95MS, p.P99MS = r.LatencyMS, r.LatencyMS, r.LatencyMS
 				if p.MinMS == nil {
 					p.MinMS = r.LatencyMS
 				}
@@ -431,14 +439,30 @@ func (s *Store) History(ctx context.Context, check model.Check, nodeName string,
 		if err != nil {
 			return series, err
 		}
+		all := latency.Hist{}
 		for _, r := range rollups {
 			series.Points = append(series.Points, model.HistoryPoint{
 				Timestamp: r.BucketStart, AvgMS: r.AvgMS, MinMS: r.MinMS, MaxMS: r.MaxMS, JitterMS: r.AvgJitterMS, LossPct: r.AvgLossPct,
 				Availability: r.Availability, Count: r.Count, Failures: r.FailCount,
+				P50MS: r.P50MS, P95MS: r.P95MS, P99MS: r.P99MS,
 			})
+			if r.LatencyHist != "" {
+				all.Merge(latency.Parse(r.LatencyHist))
+			}
+		}
+		series.Summary = summarize(series.Points)
+		applyPercentiles(&series.Summary, all)
+		return series, nil
+	}
+	// Raw results: the percentiles of the range are those of its results.
+	all := latency.Hist{}
+	for _, p := range series.Points {
+		if p.Failures == 0 && p.AvgMS != nil {
+			all.Add(*p.AvgMS)
 		}
 	}
 	series.Summary = summarize(series.Points)
+	applyPercentiles(&series.Summary, all)
 	return series, nil
 }
 
@@ -505,7 +529,7 @@ func (s *Store) AllResults(ctx context.Context, fn func(model.Result) error) err
 
 // AllRollups streams every rollup to fn.
 func (s *Store) AllRollups(ctx context.Context, fn func(model.Rollup) error) error {
-	rows, err := s.query(ctx, `SELECT `+rollupCols+` FROM rollups ORDER BY check_id, bucket_seconds, bucket_start`)
+	rows, err := s.query(ctx, `SELECT `+rollupCols+`, latency_hist FROM rollups ORDER BY check_id, bucket_seconds, bucket_start`)
 	if err != nil {
 		return err
 	}
@@ -514,7 +538,7 @@ func (s *Store) AllRollups(ctx context.Context, fn func(model.Rollup) error) err
 		var r model.Rollup
 		var start int64
 		var min, max, avg, jit, loss sql.NullFloat64
-		if err := rows.Scan(&r.CheckID, &r.BucketSecs, &start, &r.Count, &r.SuccessCount, &r.FailCount, &min, &max, &avg, &jit, &loss, &r.Availability); err != nil {
+		if err := rows.Scan(&r.CheckID, &r.BucketSecs, &start, &r.Count, &r.SuccessCount, &r.FailCount, &min, &max, &avg, &jit, &loss, &r.Availability, &r.LatencyHist); err != nil {
 			return err
 		}
 		r.BucketStart = time.Unix(start, 0).UTC()
@@ -548,13 +572,14 @@ func (s *Store) AllEvents(ctx context.Context, fn func(model.Event) error) error
 // InsertRollupsBatch upserts rollups in one transaction.
 func (s *Store) InsertRollupsBatch(ctx context.Context, rollups []model.Rollup) error {
 	return s.writeTx(ctx, func(tx *wtx) error {
-		stmt, err := tx.prepare(ctx, insertValues("rollups", rollupColList)+" "+s.d.upsertClause(rollupKeys, rollupColList))
+		cols := append(append([]string(nil), rollupColList...), "latency_hist")
+		stmt, err := tx.prepare(ctx, insertValues("rollups", cols)+" "+s.d.upsertClause(rollupKeys, cols))
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for _, r := range rollups {
-			if _, err := stmt.ExecContext(ctx, r.CheckID, r.BucketSecs, r.BucketStart.Unix(), r.Count, r.SuccessCount, r.FailCount, nullFloat(r.MinMS), nullFloat(r.MaxMS), nullFloat(r.AvgMS), nullFloat(r.AvgJitterMS), nullFloat(r.AvgLossPct), r.Availability); err != nil {
+			if _, err := stmt.ExecContext(ctx, r.CheckID, r.BucketSecs, r.BucketStart.Unix(), r.Count, r.SuccessCount, r.FailCount, nullFloat(r.MinMS), nullFloat(r.MaxMS), nullFloat(r.AvgMS), nullFloat(r.AvgJitterMS), nullFloat(r.AvgLossPct), r.Availability, r.LatencyHist); err != nil {
 				return err
 			}
 		}
@@ -594,7 +619,7 @@ func (s *Store) InsertEventsBatch(ctx context.Context, events []model.Event) err
 // ClearAll wipes every table (used before a restore).
 func (s *Store) ClearAll(ctx context.Context, includeHistory bool) error {
 	return s.writeTx(ctx, func(tx *wtx) error {
-		tables := []string{"rule_state", "rules", "triggers", "endpoints", "maintenance_windows", "dashboards", "check_state", "checks", "nodes", "settings"}
+		tables := []string{"alert_outbox", "rule_state", "rules", "triggers", "endpoints", "maintenance_windows", "dashboards", "check_state", "checks", "nodes", "settings"}
 		if includeHistory {
 			tables = append([]string{"results", "rollups", "events"}, tables...)
 		}
@@ -625,7 +650,9 @@ func (s *Store) ClearHistory(ctx context.Context) error {
 // checks so even a check moved between nodes keeps its history.
 func (s *Store) RestoreNodes(ctx context.Context, nodes []model.Node, includeHistory bool) error {
 	return s.writeTx(ctx, func(tx *wtx) error {
-		tables := []string{"rule_state", "rules", "triggers", "endpoints", "maintenance_windows", "dashboards", "check_state", "settings"}
+		// Alerts still waiting to be sent are about the configuration being
+		// replaced, so they go with it.
+		tables := []string{"alert_outbox", "rule_state", "rules", "triggers", "endpoints", "maintenance_windows", "dashboards", "check_state", "settings"}
 		if includeHistory {
 			tables = append([]string{"results", "rollups", "events", "incidents"}, tables...)
 		}

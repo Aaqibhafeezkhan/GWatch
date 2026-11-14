@@ -76,7 +76,7 @@ If a referenced document is missing, proceed with the available context and reco
 
 ## 5. Project Summary
 
-GWatch is a self-hosted, local-first network and service monitor for a home or small office. It is one Go binary with an embedded, dependency-free web interface, plus two separately versioned companions: `gwatch-agent` (hardware readings and remote collectors) and `gwatch-mcp` (an opt-in MCP server). It is in beta (0.8.11); 1.0 is reserved for the first public, stable release.
+GWatch is a self-hosted, local-first network and service monitor for a home or small office. It is one Go binary with an embedded, dependency-free web interface, plus two separately versioned companions: `gwatch-agent` (hardware readings and remote collectors) and `gwatch-mcp` (an opt-in MCP server). It is in beta (0.8.12); 1.0 is reserved for the first public, stable release.
 
 Important context:
 

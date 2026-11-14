@@ -47,6 +47,16 @@ local `httptest` servers and a fake in-process DNS resolver, and ping output is 
 from fixtures, so the tests are deterministic on a CI runner. See the [`Makefile`](../../Makefile)
 for what each target actually runs.
 
+Tests about timing — retries, backoff, the scheduler's ticks, the alert outbox — use
+[`testing/synctest`](https://pkg.go.dev/testing/synctest) (Go 1.25 and later) rather than
+short sleeps and real waits. Inside `synctest.Test` the clock is fake and moves only when
+every goroutine in the bubble is waiting, so the real 15-second e-mail retry or a minute
+of scheduler ticks takes no time, and the result does not depend on how busy the machine
+is. A whole engine, store included, can run in a bubble (see
+`internal/engine/writestate_test.go`); network I/O does not advance the fake clock, so
+keep `httptest` servers out of these tests. Prefer this for new timing tests, and move an
+old sleep-based one over when it is next touched or turns out to be flaky.
+
 By default every test runs on SQLite. The store, backup, API, engine and hostmon suites
 also run against a PostgreSQL or MySQL server when `GWATCH_TEST_DB` and a DSN are set —
 see [`DATABASE.md`](../DATABASE.md#for-developers); CI does this on the Linux job with
@@ -98,7 +108,8 @@ job — see ["Releasing the MCP companion"](RELEASING.md#releasing-the-mcp-compa
 | `internal/dbconfig` | Which database to open: flags, `GWATCH_DB_*`, `database.json`, then the SQLite default |
 | `internal/store` | Schema, migrations, single queued writer, rollups and history queries, over a dialect layer that speaks SQLite, PostgreSQL and MySQL/MariaDB |
 | `internal/checks` | Check runners: ping, http, cert, tcp, dns, keyword, json, custom, system (hardware) and snmp; node templates |
-| `internal/engine` | Scheduler, result processing, alert rules, dependencies, maintenance, retention, health, triggers, notification rules |
+| `internal/engine` | Scheduler, result processing, alert rules, dependencies, maintenance, retention, health, triggers, notification rules, flap detection (`flap.go`), the alert outbox (`outbox.go`) and the result write outside the engine lock (`writestate.go`) |
+| `internal/latency` | The mergeable latency histograms each rollup bucket keeps, and the percentiles read from them |
 | `internal/actions` | Automation actions: HTTP requests, git commands, custom scripts, run-node, and the Slack / Teams / ntfy / Pushover notifiers |
 | `internal/auth` | Roles, principals, password hashing, sessions and API-key digests |
 | `internal/secrets` | The envelope that seals individual configuration values with the machine-local `gwatch.key` |

@@ -53,6 +53,13 @@ export function create(shell) {
             hl.ping ? pingCard(hl.ping) : null)),
         h('section', { class: 'card' }, h('h2', null, 'Storage and retention'),
           h('div', { class: 'health-cards u-mt-10' },
+            // #211: a full disk or an unreachable database server stops
+            // results being kept. Checks still run, more slowly, so this is
+            // the place that says nothing is being recorded.
+            hcard(hl.resultWriteFailures ? ok(false, '', 'Failing') : ok(true, 'Saving'), 'Saving results',
+              hl.resultWriteFailures
+                ? h('span', { class: 'text-down' }, `${num(hl.resultWriteFailures)} ${hl.resultWriteFailures === 1 ? 'check' : 'checks'} could not save a result since ${relTime(hl.resultWriteFailingSince)}: ${hl.resultWriteError}. They are retried with a growing wait, up to five minutes.`)
+                : 'Every check\'s newest result was saved'),
             hcard(bytes(hl.databaseBytes), 'Database size', h('span', { class: 'mono' }, hl.databasePath || '')),
             hcard(hl.retention?.lastRunAt ? relTime(hl.retention.lastRunAt) : 'never', 'Last retention run', hl.retention?.lastError ? h('span', { class: 'text-down' }, hl.retention.lastError) : `${num(hl.retention?.rawRows)} raw · ${num(hl.retention?.rollupRows5m)} 5-min · ${num(hl.retention?.rollupRows1h)} hourly · ${num(hl.retention?.rollupRows1d)} daily`),
             hcard(hl.backup?.lastBackupAt ? ok(hl.backup.lastBackupOk, relTime(hl.backup.lastBackupAt), `failed ${relTime(hl.backup.lastBackupAt)}`) : h('span', { class: 'muted' }, 'never'), 'Last backup', hl.backup?.lastBackupFile || hl.backup?.lastError || '')),
@@ -61,7 +68,12 @@ export function create(shell) {
           h('div', { class: 'health-cards u-mt-10' },
             hcard(ok(hl.alertsEnabled, 'Enabled', 'Disabled'), 'Email alerts'),
             hcard(ok(hl.smtpConfigured, 'Configured', 'Not configured'), 'SMTP'),
-            hcard(hl.lastAlertAt ? relTime(hl.lastAlertAt) : 'never', 'Last alert sent', hl.lastAlertError ? h('span', { class: 'text-down' }, hl.lastAlertError) : '')),
+            hcard(hl.lastAlertAt ? relTime(hl.lastAlertAt) : 'never', 'Last alert sent', hl.lastAlertError ? h('span', { class: 'text-down' }, hl.lastAlertError) : ''),
+            // The alert outbox: alerts whose e-mail or channel did not work
+            // when they were raised, tried again for a day.
+            hcard(num(hl.queuedAlerts || 0), 'Waiting to be sent', hl.queuedAlerts
+              ? h('span', { class: 'text-degraded' }, `The oldest was raised ${relTime(hl.oldestQueuedAlertAt)}. GWatch tries again every few minutes, for up to a day, and says when each was raised.`)
+              : 'Every alert has been delivered')),
           h('div', { class: 'btn-group u-mt-12' }, h('a', { class: 'btn btn-sm', href: '#/settings/alerts' }, 'Alert settings'))),
         h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Recent internal errors'), h('a', { class: 'btn btn-sm', href: '#/audit/log' }, 'Open service log')),
           hl.recentErrors?.length ? h('div', { class: 'event-rows' }, hl.recentErrors.map((e) => eventRow(e))) : h('div', { class: 'all-good', style: { padding: '10px' } }, icon('check'), h('strong', null, 'No internal errors recorded'))),

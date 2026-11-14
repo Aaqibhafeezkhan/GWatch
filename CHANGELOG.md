@@ -10,6 +10,70 @@ release is published as `v<VERSION>` by the Release workflow, dispatched from
 `main`. It refuses to publish a tag that disagrees with the file — see
 [`docs/development/RELEASING.md`](docs/development/RELEASING.md).
 
+## 0.8.12 (not yet released)
+
+GWatch 0.8.12 and gwatch-agent 0.8.8 ship together. Nothing new to set up:
+the alerts and history you already have get more dependable.
+
+### Changed
+
+- **An alert that could not be sent is kept, and sent once it can be.** The
+  commonest outage on a home network takes the internet connection with it,
+  and with it every way of saying so. An e-mail or channel message that still
+  fails after its quick retry now waits in the database and is tried again
+  after 1, 2, 4 and 8 minutes, then every 15, for up to a day — longer if the
+  service asked GWatch to slow down (`Retry-After`). Each destination's alerts
+  go out in the order they were raised; an outage and its recovery that both
+  missed become one message ("Was down from 14:02 to 14:20"), except to
+  PagerDuty and Opsgenie, which get both; anything sent late says when it was
+  raised. Before, an outage that was over before the connection came back was
+  never reported at all, and a failed recovery or warning was lost. Monitor
+  health shows what is waiting.
+- **A failing check is confirmed in seconds.** Once a check has failed but not
+  yet as many times as **Failures before down**, it runs again after 30
+  seconds (**Settings › Alerts › Re-check a failing check after**) instead of
+  its whole interval, so a five-minute check that needs three failures alerts
+  in about a minute rather than a quarter of an hour. 0 turns it off.
+- **Flapping checks send one warning.** A check that keeps going down and
+  coming back (the way Nagios measures it: a weighted share of changes over
+  its last 21 states) is marked flapping; its further down alerts are held
+  back and recorded as suppressed, and one warning says why. It alerts as
+  usual again once it settles. On by default; a switch under
+  **Settings › Alerts** turns it off.
+- **Latency percentiles at every range.** Each rollup now keeps a compact,
+  mergeable histogram of its latencies (accurate to about 1%), so charts offer
+  the 95th and 99th percentile at 3 days, 7 days, 30 days and a year as well as
+  the average, which hides the occasional slow response. History rolled up
+  before this version has none.
+- **A failure at the name lookup says so.** A down alert for a check that
+  failed while looking up its target's name explains that the target was never
+  contacted, and that several such failures at once point at the DNS server.
+
+### Fixed
+
+- **Six-day certificates were always "expiring".** A certificate whose whole
+  lifetime is shorter than the warning period (Let's Encrypt has issued six-day
+  certificates since January 2026) was in warning from the day it was issued.
+  It now warns once a third of its lifetime is left. A warning period shorter
+  than the lifetime is used exactly as set, so 90-day and 45-day certificates
+  are unaffected. This is the agent's change too: remote collectors share the
+  check.
+- **A full disk made every check run once a second** (#211). When a result
+  cannot be saved — a full disk, a locked database, a database server that is
+  down — the check now waits 5 seconds, then 10, 20 and so on up to 5 minutes,
+  and Monitor health and the header say results are not being saved.
+- **One slow disk no longer holds everything up** (#210). Saving a result
+  happened while the engine held its lock, so on a Raspberry Pi's SD card or a
+  remote database server the scheduler, the dashboards and every other check
+  waited for each write. The write now happens outside the lock.
+
+### Documentation
+
+- The user guide covers flapping, the re-check, the alert outbox and
+  percentiles; `docs/API.md` the new settings, health fields, history fields
+  and event types. Developers: timing tests now use `testing/synctest`
+  (`docs/development/DEVELOPMENT.md`).
+
 ## 0.8.11 (not yet released)
 
 GWatch only; gwatch-agent stays at 0.8.7. No change to the program: this

@@ -186,12 +186,12 @@ func lastInsertIDExec(ctx context.Context, ex execer, q string, args ...any) (in
 	return res.LastInsertId()
 }
 
-// schemaStatements splits the three DDL constants into single statements,
+// schemaStatements splits the DDL constants into single statements,
 // with comment lines removed, so a dialect can translate and run them one at
 // a time.
 func schemaStatements() []string {
 	var out []string
-	for _, block := range []string{schema, automationSchema, hostSchema, incidentSchema} {
+	for _, block := range []string{schema, automationSchema, hostSchema, incidentSchema, outboxSchema} {
 		out = append(out, splitStatements(block)...)
 	}
 	return out

@@ -710,6 +710,37 @@ type CertInfo struct {
 	Error         string    `json:"error,omitempty"` // verification error when Valid is false
 }
 
+// ExpiresWithin reports whether the certificate is close enough to expiry to
+// warn about, given the number of days a person asked to be warned within.
+//
+// A fixed number of days stops working for short-lived certificates: a
+// six-day certificate (Let's Encrypt has issued them since January 2026) is
+// always within fourteen days of expiry, so it would be warned about from
+// the moment it was issued. So when the warning period is at least as long
+// as the certificate's whole lifetime, the warning waits instead until a
+// third of the lifetime is left — two days for a six-day certificate, by
+// when an automatic renewal should long since have replaced it. A warning
+// period shorter than the lifetime is taken as meant, whatever it is. A
+// certificate without a usable lifetime is judged on days alone.
+func (c *CertInfo) ExpiresWithin(warnDays int) bool {
+	if c == nil {
+		return false
+	}
+	return c.DaysRemaining <= c.EffectiveWarnDays(warnDays)
+}
+
+// EffectiveWarnDays is the warning threshold ExpiresWithin applies.
+func (c *CertInfo) EffectiveWarnDays(warnDays int) int {
+	if c == nil || c.NotBefore.IsZero() || !c.NotAfter.After(c.NotBefore) {
+		return warnDays
+	}
+	lifetime := c.NotAfter.Sub(c.NotBefore).Hours() / 24
+	if float64(warnDays) < lifetime {
+		return warnDays
+	}
+	return int(lifetime / 3)
+}
+
 // CheckState is the live state of a check maintained by the engine.
 type CheckState struct {
 	CheckID             int64      `json:"checkId"`
@@ -723,7 +754,7 @@ type CheckState struct {
 	LastLatencyMS       *float64   `json:"lastLatencyMs"`
 	AlertActive         bool       `json:"alertActive"` // a down notification was sent and no recovery yet
 	AlertSuppressed     bool       `json:"alertSuppressed"`
-	SuppressReason      string     `json:"suppressReason,omitempty"` // maintenance | dependency | silenced | cooldown | disabled
+	SuppressReason      string     `json:"suppressReason,omitempty"` // maintenance | dependency | silenced | cooldown | disabled | flapping
 	LastAlertAt         *time.Time `json:"lastAlertAt"`
 	LastWarnAt          *time.Time `json:"lastWarnAt"`
 	SilencedUntil       *time.Time `json:"silencedUntil"`
@@ -739,6 +770,12 @@ type CheckState struct {
 	LastContentHash  string            `json:"-"`
 	LastContentValue string            `json:"-"`
 	Running          bool              `json:"running"`
+	// Flapping is set while the check keeps going down and coming back (see
+	// internal/engine/flap.go); its down alerts are held back meanwhile.
+	// FlapHistory is the newest judged states it is worked out from, down
+	// (true) or not, oldest first. Both are kept in memory only.
+	Flapping    bool   `json:"flapping,omitempty"`
+	FlapHistory []bool `json:"-"`
 }
 
 // EventType enumerates the incident timeline entries.
@@ -780,6 +817,10 @@ const (
 	// it is back), and came back. One pair for the collector, not one per check.
 	EventCollectorDown EventType = "collector_unreachable"
 	EventCollectorUp   EventType = "collector_back"
+	// A check began flapping (going down and coming back again and again),
+	// and settled down again.
+	EventFlapping      EventType = "flapping"
+	EventFlappingEnded EventType = "flapping_ended"
 )
 
 // Event is one entry in the incident/event timeline.
@@ -990,7 +1031,28 @@ type AlertSettings struct {
 	// into one summary sent hourly or daily instead of one e-mail each. One
 	// of the WarningDigest* constants; "" reads as off.
 	WarningDigest string `json:"warningDigest"`
+	// RecheckSeconds is how soon a check that has just failed, but has not
+	// yet failed FailureThreshold times in a row, runs again. Waiting the
+	// check's full interval between confirmations meant a five-minute check
+	// with a threshold of three took a quarter of an hour to alert; a short
+	// re-check keeps the protection against one-off blips and learns of a
+	// real outage sooner. It applies only when shorter than the check's own
+	// interval. 0 turns it off, so every run waits the full interval as it
+	// always used to; an install whose stored settings predate it gets the default.
+	RecheckSeconds int `json:"recheckSeconds"`
+	// FlapDetection notices a check that keeps going down and coming back
+	// (see flap.go). While it is flapping, its down and recovery alerts are
+	// held back and one "flapping" warning is sent instead; once it settles,
+	// alerting carries on as normal. On by default.
+	FlapDetection bool `json:"flapDetection"`
 }
+
+// DefaultRecheckSeconds is AlertSettings.RecheckSeconds for a new install,
+// and MaxRecheckSeconds the most it can be set to.
+const (
+	DefaultRecheckSeconds = 30
+	MaxRecheckSeconds     = 3600
+)
 
 // MaxAlertGroupWindowSeconds bounds AlertSettings.GroupWindowSeconds. A
 // longer window would hold a down alert back for longer than most people
@@ -1369,6 +1431,8 @@ func DefaultSettings() Settings {
 			CertWarnDays:     14,
 			SMTP:             SMTPSettings{Port: 587, Security: "starttls"},
 			WarningDigest:    WarningDigestOff,
+			RecheckSeconds:   DefaultRecheckSeconds,
+			FlapDetection:    true,
 		},
 		Retention: RetentionSettings{
 			RawDays:     30,
@@ -1408,6 +1472,13 @@ type Rollup struct {
 	AvgJitterMS  *float64  `json:"avgJitterMs"`
 	AvgLossPct   *float64  `json:"avgLossPct"`
 	Availability float64   `json:"availability"` // percent 0-100
+	// LatencyHist is the bucket's latency histogram as stored
+	// (internal/latency), '' for a bucket rolled up before they were kept.
+	// P50MS, P95MS and P99MS are read from it.
+	LatencyHist string   `json:"latencyHist,omitempty"`
+	P50MS       *float64 `json:"p50Ms,omitempty"`
+	P95MS       *float64 `json:"p95Ms,omitempty"`
+	P99MS       *float64 `json:"p99Ms,omitempty"`
 }
 
 // HistoryPoint is a chart point (raw result or rollup bucket).
@@ -1426,6 +1497,11 @@ type HistoryPoint struct {
 	// same number, so a chart drawn from the latency fields plots a named
 	// metric without knowing it is not a latency.
 	Value *float64 `json:"value,omitempty"`
+	// P50MS, P95MS and P99MS are a rollup bucket's latency percentiles, when
+	// its histogram is known; a raw result's are its own latency.
+	P50MS *float64 `json:"p50Ms,omitempty"`
+	P95MS *float64 `json:"p95Ms,omitempty"`
+	P99MS *float64 `json:"p99Ms,omitempty"`
 }
 
 // HistorySeries is the response of the history endpoint.
@@ -1458,6 +1534,12 @@ type HistorySummary struct {
 	MaxMS        *float64 `json:"maxMs"`
 	Count        int      `json:"count"`
 	Failures     int      `json:"failures"`
+	// P50MS, P95MS and P99MS are the latency percentiles of the whole range:
+	// from its raw results, or from its buckets' histograms (nil when the
+	// buckets predate them).
+	P50MS *float64 `json:"p50Ms,omitempty"`
+	P95MS *float64 `json:"p95Ms,omitempty"`
+	P99MS *float64 `json:"p99Ms,omitempty"`
 }
 
 // NodeTemplate prefills a node and its checks.
@@ -1537,6 +1619,19 @@ type Health struct {
 	ListenAddress        string          `json:"listenAddress"`
 	Platform             string          `json:"platform"`
 	Ping                 PingStatus      `json:"ping"`
+	// ResultWriteFailures is how many checks could not save their newest
+	// result (a full disk, a locked database, an unreachable database
+	// server). While it is above zero, results are not being kept and those
+	// checks are retried with a growing wait; ResultWriteError is the newest
+	// error and ResultWriteFailingSince when the failures began.
+	// QueuedAlerts is how many alerts are waiting to be sent again because
+	// their destination did not work when they were raised (the alert
+	// outbox), and OldestQueuedAlertAt when the oldest was raised.
+	QueuedAlerts            int        `json:"queuedAlerts"`
+	OldestQueuedAlertAt     *time.Time `json:"oldestQueuedAlertAt,omitempty"`
+	ResultWriteFailures     int        `json:"resultWriteFailures"`
+	ResultWriteError        string     `json:"resultWriteError,omitempty"`
+	ResultWriteFailingSince *time.Time `json:"resultWriteFailingSince,omitempty"`
 }
 
 // Ways the built-in ping can reach the network, as PingStatus.Auto reports
@@ -1721,6 +1816,10 @@ type ActionResult struct {
 	StatusCode int       `json:"statusCode,omitempty"`
 	StartedAt  time.Time `json:"startedAt"`
 	DurationMS int64     `json:"durationMs"`
+	// RetryAfter is how long the service asked to be left alone before the
+	// next attempt (an HTTP Retry-After on 429 or 503), or 0. The alert
+	// outbox waits at least this long before sending again.
+	RetryAfter time.Duration `json:"-"`
 }
 
 // TriggerConditions lists the conditions a trigger can react to.

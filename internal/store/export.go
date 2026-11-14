@@ -396,7 +396,7 @@ func (s *Store) ClearEverything(ctx context.Context) error {
 		// Children before parents: MySQL will not delete a row another one
 		// still points at unless the constraint cascades, and not every one
 		// of these does.
-		for _, t := range []string{"results", "rollups", "events", "agent_pairings", "agents", "sessions", "api_keys", "users",
+		for _, t := range []string{"alert_outbox", "results", "rollups", "events", "agent_pairings", "agents", "sessions", "api_keys", "users",
 			"rule_state", "rules", "triggers", "endpoints", "maintenance_windows", "dashboards", "wallboards", "check_state", "checks", "nodes", "settings"} {
 			if _, err := tx.exec(ctx, "DELETE FROM "+t); err != nil {
 				return fmt.Errorf("clear %s: %w", t, err)

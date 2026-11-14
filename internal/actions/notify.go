@@ -197,7 +197,7 @@ func (r *Runner) runSlack(ctx context.Context, a model.Action, vars Vars, res mo
 		res.Error = err.Error()
 		return res
 	}
-	res.StatusCode = resp.StatusCode
+	res.StatusCode, res.RetryAfter = resp.StatusCode, retryAfterNow(resp)
 	res.Output = fmt.Sprintf("slack → %s\n%s", resp.Status, excerpt(data))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		res.Error = fmt.Sprintf("unexpected HTTP status %d from Slack", resp.StatusCode)
@@ -258,7 +258,7 @@ func (r *Runner) runTeams(ctx context.Context, a model.Action, vars Vars, res mo
 		res.Error = err.Error()
 		return res
 	}
-	res.StatusCode = resp.StatusCode
+	res.StatusCode, res.RetryAfter = resp.StatusCode, retryAfterNow(resp)
 	res.Output = fmt.Sprintf("teams → %s\n%s", resp.Status, excerpt(data))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		res.Error = fmt.Sprintf("unexpected HTTP status %d from Teams", resp.StatusCode)
@@ -317,7 +317,7 @@ func (r *Runner) runNtfy(ctx context.Context, a model.Action, vars Vars, res mod
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxOutput))
-	res.StatusCode = resp.StatusCode
+	res.StatusCode, res.RetryAfter = resp.StatusCode, retryAfterNow(resp)
 	res.Output = fmt.Sprintf("ntfy → %s\n%s", resp.Status, excerpt(data))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		res.Error = fmt.Sprintf("unexpected HTTP status %d from ntfy", resp.StatusCode)
@@ -382,7 +382,7 @@ func (r *Runner) runPushover(ctx context.Context, a model.Action, vars Vars, res
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxOutput))
-	res.StatusCode = resp.StatusCode
+	res.StatusCode, res.RetryAfter = resp.StatusCode, retryAfterNow(resp)
 	res.Output = fmt.Sprintf("pushover → %s\n%s", resp.Status, excerpt(data))
 	if resp.StatusCode != http.StatusOK {
 		res.Error = fmt.Sprintf("unexpected HTTP status %d from Pushover", resp.StatusCode)

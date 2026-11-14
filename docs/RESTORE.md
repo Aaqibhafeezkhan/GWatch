@@ -236,6 +236,9 @@ database without an archive.
 - **`database.json`**, if the old machine kept its data on a PostgreSQL or MySQL
   server ([`DATABASE.md`](DATABASE.md)). Which database the new machine uses is its
   own decision; a backup restores onto any of them.
+- **Alerts still waiting to be sent again** (the alert outbox). A restore
+  replaces the configuration they were raised about, so the new machine's
+  outbox starts empty, and so does the old machine's after a restore onto it.
 - Log files under `logs/` are local operational logs and are not part of a
   backup archive.
 - Anything you changed on the new machine *before* restoring is discarded —

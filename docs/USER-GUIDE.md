@@ -344,6 +344,13 @@ Issuer, validity and days remaining for a `host:port` — port 443 by default.
 **Warn before expiry** defaults to 14 days. Use this when you want expiry
 watched on its own schedule rather than as a rider on an HTTP check.
 
+A certificate whose whole lifetime is shorter than the warning period — a
+six-day Let's Encrypt certificate against the 14-day default, say — would be in
+warning from the day it was issued. For those, the warning instead begins once
+a third of the lifetime is left (two days, for a six-day certificate), by when
+an automatic renewal should long since have replaced it. A warning period
+shorter than the certificate's lifetime is used exactly as you set it.
+
 ### TCP port
 
 Can a connection be opened. **Port** is required. The honest test for SSH, a
@@ -741,8 +748,9 @@ remembered in this browser.
 
 **Charts** is where a chart you want to keep gets saved rather than rebuilt.
 Tick the series you want under **Metrics** and pick a range. Each node › check
-lists every metric it can be charted by: latency (average, minimum, maximum),
-jitter and packet loss for a ping check, response time for the others,
+lists every metric it can be charted by: latency (average, minimum, maximum,
+95th and 99th percentile), jitter and packet loss for a ping check, response
+time for the others,
 availability for all of them, and every metric the check measures — a
 machine's processor, memory, swap, load, each disk and its inodes, each network
 interface's received and sent, disk read, write and busy; an SNMP check's OIDs;
@@ -787,7 +795,16 @@ Every chart in GWatch, here and elsewhere, has two things worth knowing about:
   line.
 
 **Ranges and resolution.** 1h and 24h are drawn from raw results, 3d and 7d from
-5-minute rollups, 30d from hourly and 1y from daily. A **named metric** series
+5-minute rollups, 30d from hourly and 1y from daily.
+
+**Percentiles.** The 95th percentile is the latency 95 results in every 100
+beat: where the average says what a check usually takes, the percentiles show
+the occasional slow response the average hides. Each rollup keeps a compact
+histogram of its latencies, accurate to about 1%, so the percentiles reach as
+far back as the rollups do. On 1h and 24h each point is a single result, so the
+percentile lines follow the average there; the figure under the chart is the
+percentile of the whole range either way. History rolled up before GWatch
+0.8.12 has no histogram and shows no percentiles. A **named metric** series
 — an SNMP reading, a recorded JSON value, a hardware metric — is always read
 from raw results, because the rollup tables have columns for latency, jitter
 and loss and nowhere to put a metric a check invented. So those series reach
@@ -882,7 +899,16 @@ blank actor column means "nobody did this, it just happened".
 - **Send a recovery email when a check becomes healthy again.**
 - **Also email for warnings** — latency, packet loss, expiring certificates,
   content changes.
-- **Certificate warning** — how many days before expiry counts as a warning.
+- **Certificate warning** — how many days before expiry counts as a warning
+  (see [HTTPS certificate](#https-certificate) for short-lived certificates).
+- **Re-check a failing check after** — once a check has failed but not yet as
+  many times as **Failures before down**, it runs again this soon (30 seconds
+  by default) instead of waiting its whole interval. A five-minute check that
+  needs three failures used to take a quarter of an hour to alert; now it takes
+  about a minute, and a one-off blip is still forgiven. Used only when shorter
+  than the check's interval; 0 turns it off.
+- **Notice checks that keep going down and coming back** — flap detection, on
+  by default; see below.
 - **Group alerts for the same node within** — see *Fewer emails* below. 0 (off)
   by default.
 - **Send warnings as a digest** — *off*, *hourly* or *daily*; see below.
@@ -893,8 +919,44 @@ blank actor column means "nobody did this, it just happened".
 never watched deliver is a guess.
 
 Alert emails are sent at most three at a time, and one that fails is tried
-once more fifteen seconds later. If it still fails, the alert is not counted as
-sent: the next failing run tries again.
+once more fifteen seconds later. If it still fails, it waits to be sent again —
+see *When an alert cannot be sent* below.
+
+### Flapping
+
+A check that keeps going down and coming back — a dying cable, an overloaded
+access point — would send an alert for every change. GWatch keeps each check's
+last 21 states (down or not, after **Failures before down**) and works out how
+often it changed between them, counting recent changes more than old ones, the
+way Nagios has done for years. When that passes 30% the check is
+**flapping**: the timeline says so, one warning is sent (if warnings are on),
+and further down alerts are held back and recorded as *suppressed (flapping)*.
+The first outage is always alerted on as usual. Once the share drops below 15%
+the check has settled; if it is still down then, it alerts as normal. The
+history is kept in memory, so after a restart a check needs a few results
+before it can be called flapping again.
+
+### When an alert cannot be sent
+
+The commonest outage on a home network is the router or the internet
+connection, and that is exactly when an email or a chat message cannot get out.
+So an alert that cannot be delivered, after its quick retry, is kept: it waits
+in the database and is tried again after 1, 2, 4 and 8 minutes and then every
+15 minutes, for up to a day — longer between tries if the service asked GWatch
+to slow down. Each email address list and each channel is its own queue, and a
+queue's alerts go out in the order they were raised, so a recovery never
+arrives before the outage it ends.
+
+- A waiting alert counts as sent for the cooldown, so the check does not raise
+  a second one meanwhile.
+- If an outage and its recovery are both still waiting when the connection
+  comes back, you get one message — *"Was down from 14:02 to 14:20 (18 min)"* —
+  instead of two. PagerDuty and Opsgenie still get both, to open and close
+  their incident.
+- Everything sent late says when it was raised.
+- After a day, a waiting alert is given up, and the timeline says so. Switching
+  alerts or a channel off drops what was waiting for it.
+- **Monitor health** shows how many alerts are waiting.
 
 ### Fewer emails: grouping and the warning digest
 
@@ -915,8 +977,8 @@ push channel gets one message for the group too.
   at all — neither the outage nor the recovery — and its cooldown is not used
   up. The timeline still shows the outage and says the alert was dropped.
 - Cooldowns, silences, maintenance and dependencies work per check exactly as
-  before; grouping only changes how many emails carry the alerts. If a grouped
-  email cannot be delivered, every check in it is re-armed.
+  before; grouping only changes how many emails carry the alerts. A grouped email
+  that cannot be delivered waits to be sent again as one email.
 - Checks with their own recipient list are grouped separately, since one email
   cannot go to both lists.
 - PagerDuty and Opsgenie still get one event per check (at the moment the
@@ -958,9 +1020,8 @@ an outage. Keys, tokens and webhook URLs are stored encrypted and shown as
 `********` afterwards; editing a channel without retyping them keeps them.
 
 Each delivery is in the timeline as **alert sent** ("Down alert sent to On-call
-SMS") or **alert failed** with the provider's reason. A down alert counts as
-delivered if the email or any channel got through; if nothing did, the next
-failing run tries again.
+SMS") or **alert failed** with the provider's reason. A channel that fails waits
+to be sent again, as an email does (*When an alert cannot be sent*, above).
 
 ### The four ways an alert gets narrowed
 
@@ -1305,9 +1366,13 @@ for the same reason.
 
 ### Monitor health
 
-GWatch watches itself: whether the service and the scheduler are running, the
-last retention run, the last backup, recent internal errors and bounced alert
-mail. The service-health line in the header links here, and the
+GWatch watches itself: whether the service and the scheduler are running,
+whether results are being saved, the last retention run, the last backup,
+recent internal errors, bounced alert mail and alerts still waiting to be sent.
+If the database cannot be written to — a full disk, a database server that is
+down — checks carry on, but each one that cannot save its result waits 5
+seconds, then 10, 20 and so on up to 5 minutes before it runs again, and
+**Saving results** here (and the header's service line) says so. The service-health line in the header links here, and the
 **serviceHealth** indicator fires from it.
 
 ### AI & MCP

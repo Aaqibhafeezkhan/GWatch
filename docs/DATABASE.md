@@ -228,7 +228,9 @@ their projection addresses), user accounts (with their password hashes — every
 sign in as before), API keys, hardware agents (with their ids, so their node bindings
 survive) and, as history, raw results (which carry hardware checks' readings), rollups and events.
 Browser sessions are not copied: everyone signs in once more. Pairing codes are not
-copied: they are short-lived invitations.
+copied: they are short-lived invitations. Nor are alerts still waiting to be sent again
+(the alert outbox, see [`USER-GUIDE.md`](USER-GUIDE.md#when-an-alert-cannot-be-sent)):
+they belong to the install that raised them.
 
 The SQLite file is left in place as a fallback. Once you are happy on the server, it can
 be archived or deleted; to go back to it, delete `database.json` and start GWatch.

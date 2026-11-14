@@ -1,6 +1,6 @@
 # Features
 
-A running checklist of capabilities GWatch is believed to implement, as of 0.8.11 (gwatch-agent 0.8.7, gwatch-mcp 0.1.2). Keep entries small and concrete so the list can support audits and QA. A listed feature counts as implemented for inventory purposes whether or not it has been tested; the checkbox is a checklist marker, not a test result. Seeded from `README.md` and `docs/USER-GUIDE.md`.
+A running checklist of capabilities GWatch is believed to implement, as of 0.8.12 (gwatch-agent 0.8.8, gwatch-mcp 0.1.2). Keep entries small and concrete so the list can support audits and QA. A listed feature counts as implemented for inventory purposes whether or not it has been tested; the checkbox is a checklist marker, not a test result. Seeded from `README.md` and `docs/USER-GUIDE.md`.
 
 ## Running GWatch
 
@@ -12,6 +12,7 @@ A running checklist of capabilities GWatch is believed to implement, as of 0.8.1
 - [ ] Listens on loopback by default; LAN access opt-in with sign-in
 - [ ] Signed self-update, verified before install
 - [ ] Monitor health page with the service log
+- [ ] Results that cannot be saved back off (5 s doubling to 5 min) and show in Monitor health
 
 ## Nodes and checks
 
@@ -19,7 +20,7 @@ A running checklist of capabilities GWatch is believed to implement, as of 0.8.1
 - [ ] Node templates (website, home server, router, API endpoint and others)
 - [ ] Ping check (latency, jitter, packet loss; ICMP or system ping)
 - [ ] HTTP/S check (expected codes, redirects, final URL, timings)
-- [ ] HTTPS certificate check with expiry thresholds
+- [ ] HTTPS certificate check with expiry thresholds, allowing for short-lived (six-day) certificates
 - [ ] TCP port check
 - [ ] DNS check with expected answer
 - [ ] Keyword check
@@ -30,6 +31,8 @@ A running checklist of capabilities GWatch is believed to implement, as of 0.8.1
 - [ ] SNMP check with walk-to-choose and named ports
 - [ ] Matter device check through python-matter-server
 - [ ] Per-check interval, timeout, retries and failure threshold
+- [ ] Failing checks re-checked sooner than their interval until confirmed down (Settings › Alerts › re-check)
+- [ ] Failures at the name lookup say so, and point at the DNS server
 - [ ] Run now with the result inspector
 - [ ] Dependencies between nodes
 - [ ] Discovery: ping sweep, names, open ports, suggested templates
@@ -40,6 +43,8 @@ A running checklist of capabilities GWatch is believed to implement, as of 0.8.1
 - [ ] Email alerts with test email
 - [ ] Slack, Teams, Discord, Telegram, Matrix, ntfy, Gotify, Pushover, Twilio SMS, PagerDuty, Opsgenie
 - [ ] Consecutive-failure thresholds, cooldowns, recovery notifications
+- [ ] Flap detection: one flapping warning instead of an alert per change
+- [ ] Alert outbox: undelivered alerts retried for a day, in order, honouring Retry-After, sent late with when they were raised; an outage missed entirely becomes one "was down from … to …" message
 - [ ] Dependency-aware suppression
 - [ ] Silences and maintenance windows
 - [ ] Per-node alert grouping and warning digest
@@ -51,6 +56,7 @@ A running checklist of capabilities GWatch is believed to implement, as of 0.8.1
 
 - [ ] Multiple customisable dashboards with widgets
 - [ ] Charts at 1h–1y with overlays of earlier periods and "view as table"
+- [ ] Latency percentiles (p50/p95/p99) kept in every rollup and charted
 - [ ] Network map: status colours, outage reach, clusters, arranging by hand, what-if, Present mode, list view
 - [ ] Incidents with acknowledge and resolve
 - [ ] Event timeline with notes

@@ -185,7 +185,9 @@ func TestAlertChannelSilenceAndSeverityAndGroups(t *testing.T) {
 }
 
 // With no e-mail recipients, the channels alone carry the alert; and when
-// every route fails, the alert is re-armed exactly as a failed e-mail is.
+// every route fails, the alert waits in the outbox (counting as raised, so
+// the next failing result does not raise another) and is sent once the
+// channel works again.
 func TestAlertChannelsWithoutEmailAndFailure(t *testing.T) {
 	e, st, net, mb := setup(t)
 	box := &pushbox{fail: true}
@@ -209,18 +211,27 @@ func TestAlertChannelsWithoutEmailAndFailure(t *testing.T) {
 	e.RunNow(ctx, cid)
 	waitFor(t, func() bool {
 		s, _ := e.State(cid)
-		return eventTypes(t, st, cid)[model.EventAlertFailed] == 1 && !s.AlertActive
+		return eventTypes(t, st, cid)[model.EventAlertFailed] == 1 && s.AlertActive
 	})
 	if mb.count() != 0 {
 		t.Fatal("no e-mail without recipients")
 	}
-	// The channel works again: the next failing result delivers it.
+	if q := queued(t, st); len(q) != 1 || q[0].Target != "channel:x" || q[0].Kind != "down" {
+		t.Fatalf("the failed alert should wait in the outbox: %+v", q)
+	}
+	// Still failing, the check raises nothing new; the channel works again
+	// and the outbox sends what was waiting.
+	e.RunNow(ctx, cid)
 	box.mu.Lock()
 	box.fail = false
 	box.mu.Unlock()
-	e.RunNow(ctx, cid)
-	waitFor(t, func() bool { return box.count() == 1 })
-	waitFor(t, func() bool { s, _ := e.State(cid); return s.AlertActive })
+	e.drainOutbox(ctx, time.Now().Add(2*time.Minute))
+	if box.count() != 1 || len(queued(t, st)) != 0 {
+		t.Fatalf("the queued alert was not sent once: %d sent, %d waiting", box.count(), len(queued(t, st)))
+	}
+	if types := eventTypes(t, st, cid); types[model.EventAlertSent] != 1 {
+		t.Fatalf("the late delivery is not on the timeline: %v", types)
+	}
 }
 
 func TestAlertChannelsForIncidentOnlyRecovery(t *testing.T) {

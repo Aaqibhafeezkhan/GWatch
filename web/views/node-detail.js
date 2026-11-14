@@ -186,7 +186,9 @@ export async function mount(root, ctx) {
       // figures say far more about the link than the average alone. They come
       // from the last result rather than the state, which only keeps latency.
       ...(c.type === 'ping' && last ? pingStats(last) : []),
-      last?.details?.cert ? stat(plural(last.details.cert.daysRemaining, 'day'), 'Cert expires in', null, last.details.cert.daysRemaining <= 14 ? 'text-degraded' : '') : null,
+      // Coloured by the engine's own verdict, which knows the check's warning
+      // period and allows for short-lived certificates (CertInfo.ExpiresWithin).
+      last?.details?.cert ? stat(plural(last.details.cert.daysRemaining, 'day'), 'Cert expires in', null, st.certWarningActive || last.details.cert.valid === false ? 'text-degraded' : '') : null,
       st.lastChangeAt ? stat(relTime(st.lastChangeAt), `${status[0].toUpperCase()}${status.slice(1)} since`, st.lastChangeAt) : null,
     );
     card.append(stats);

@@ -290,7 +290,7 @@ func jsonRequest(ctx context.Context, method, u string, payload any) (*http.Requ
 // finish fills in the common parts of a channel's result: the status line and
 // response excerpt as output, and an error for a status outside 2xx.
 func finish(res model.ActionResult, label string, resp *http.Response, data []byte) model.ActionResult {
-	res.StatusCode = resp.StatusCode
+	res.StatusCode, res.RetryAfter = resp.StatusCode, retryAfterNow(resp)
 	res.Output = fmt.Sprintf("%s → %s\n%s", strings.ToLower(label), resp.Status, excerpt(data))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		res.Error = fmt.Sprintf("unexpected HTTP status %d from %s", resp.StatusCode, label)
@@ -534,7 +534,7 @@ func (r *Runner) runTwilio(ctx context.Context, a model.Action, vars Vars, res m
 			}
 			continue
 		}
-		res.StatusCode = resp.StatusCode
+		res.StatusCode, res.RetryAfter = resp.StatusCode, retryAfterNow(resp)
 		out = append(out, fmt.Sprintf("twilio → %s: %s\n%s", number, resp.Status, excerpt(data)))
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			if res.Error == "" {
