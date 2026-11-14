@@ -1472,6 +1472,13 @@ type Rollup struct {
 	AvgJitterMS  *float64  `json:"avgJitterMs"`
 	AvgLossPct   *float64  `json:"avgLossPct"`
 	Availability float64   `json:"availability"` // percent 0-100
+	// LatencyHist is the bucket's latency histogram as stored
+	// (internal/latency), '' for a bucket rolled up before they were kept.
+	// P50MS, P95MS and P99MS are read from it.
+	LatencyHist string   `json:"latencyHist,omitempty"`
+	P50MS       *float64 `json:"p50Ms,omitempty"`
+	P95MS       *float64 `json:"p95Ms,omitempty"`
+	P99MS       *float64 `json:"p99Ms,omitempty"`
 }
 
 // HistoryPoint is a chart point (raw result or rollup bucket).
@@ -1490,6 +1497,11 @@ type HistoryPoint struct {
 	// same number, so a chart drawn from the latency fields plots a named
 	// metric without knowing it is not a latency.
 	Value *float64 `json:"value,omitempty"`
+	// P50MS, P95MS and P99MS are a rollup bucket's latency percentiles, when
+	// its histogram is known; a raw result's are its own latency.
+	P50MS *float64 `json:"p50Ms,omitempty"`
+	P95MS *float64 `json:"p95Ms,omitempty"`
+	P99MS *float64 `json:"p99Ms,omitempty"`
 }
 
 // HistorySeries is the response of the history endpoint.
@@ -1522,6 +1534,12 @@ type HistorySummary struct {
 	MaxMS        *float64 `json:"maxMs"`
 	Count        int      `json:"count"`
 	Failures     int      `json:"failures"`
+	// P50MS, P95MS and P99MS are the latency percentiles of the whole range:
+	// from its raw results, or from its buckets' histograms (nil when the
+	// buckets predate them).
+	P50MS *float64 `json:"p50Ms,omitempty"`
+	P95MS *float64 `json:"p95Ms,omitempty"`
+	P99MS *float64 `json:"p99Ms,omitempty"`
 }
 
 // NodeTemplate prefills a node and its checks.

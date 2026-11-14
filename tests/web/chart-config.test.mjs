@@ -130,13 +130,14 @@ test('checkMetricOptions lists what each kind of check can be charted by', () =>
   assert.ok(sys.slice(0, 4).every((o) => o.named), 'hardware readings are named metrics');
   assert.equal(sys.find((o) => o.metric === 'net:eth0.rx').label, 'Network eth0 received');
   const ping = checkMetricOptions(machine.checks[1]);
-  assert.deepEqual(ping.map((o) => o.metric), ['avg', 'min', 'max', 'jitter', 'loss', 'availability']);
+  assert.deepEqual(ping.map((o) => o.metric), ['avg', 'min', 'max', 'p95', 'p99', 'jitter', 'loss', 'availability']);
   assert.equal(ping[0].label, 'Latency (average)');
   const http = checkMetricOptions({ id: 5, type: 'http', name: 'Web' });
-  assert.deepEqual(http.map((o) => o.metric), ['avg', 'min', 'max', 'availability'], 'jitter and loss are a ping’s alone');
+  assert.deepEqual(http.map((o) => o.metric), ['avg', 'min', 'max', 'p95', 'p99', 'availability'], 'jitter and loss are a ping’s alone');
+  assert.equal(http.find((o) => o.metric === 'p95').label, 'Response time (95th percentile)');
   assert.equal(http[0].label, 'Response time (average)');
   const snmp = checkMetricOptions({ id: 6, type: 'snmp', name: 'Switch', config: { snmpOids: [{ name: 'Uplink in', unit: 'bit/s' }, { name: '' }] } });
-  assert.deepEqual(snmp.map((o) => o.metric), ['Uplink in', 'avg', 'min', 'max', 'availability']);
+  assert.deepEqual(snmp.map((o) => o.metric), ['Uplink in', 'avg', 'min', 'max', 'p95', 'p99', 'availability']);
 });
 
 const settle = () => new Promise((r) => setTimeout(r, 0));

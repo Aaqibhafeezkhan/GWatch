@@ -39,6 +39,11 @@ export const METRICS = [
   { value: 'avg', label: 'Latency / response time (average)', unit: 'ms' },
   { value: 'min', label: 'Latency (minimum)', unit: 'ms' },
   { value: 'max', label: 'Latency (maximum)', unit: 'ms' },
+  // Percentiles: the latency that 95 (or 99) in every 100 results beat. An
+  // average hides the occasional slow response; these show it, across every
+  // range, from the histograms the rollups keep.
+  { value: 'p95', label: 'Latency (95th percentile)', unit: 'ms' },
+  { value: 'p99', label: 'Latency (99th percentile)', unit: 'ms' },
   { value: 'jitter', label: 'Jitter', unit: 'ms' },
   { value: 'loss', label: 'Packet loss', unit: '%' },
   { value: 'availability', label: 'Availability', unit: '%' },
@@ -226,6 +231,8 @@ function builtinLabel(metric, type) {
     case 'avg': return `${what} (average)`;
     case 'min': return `${what} (minimum)`;
     case 'max': return `${what} (maximum)`;
+    case 'p95': return `${what} (95th percentile)`;
+    case 'p99': return `${what} (99th percentile)`;
     default: return metricMeta(metric).label;
   }
 }
@@ -240,9 +247,9 @@ function builtinLabel(metric, type) {
 export function checkMetricOptions(c, last) {
   const own = namedMetrics(c, last).map((m) => ({ metric: m.name, named: true, label: m.label || m.name, unit: m.unit }));
   const builtin = (list) => list.map((metric) => ({ metric, label: builtinLabel(metric, c.type), unit: metricMeta(metric).unit }));
-  if (c.type === 'ping') return builtin(['avg', 'min', 'max', 'jitter', 'loss', 'availability']);
+  if (c.type === 'ping') return builtin(['avg', 'min', 'max', 'p95', 'p99', 'jitter', 'loss', 'availability']);
   if (c.type === 'system') return [...own, ...builtin(['availability'])];
-  return [...own, ...builtin(['avg', 'min', 'max', 'availability'])];
+  return [...own, ...builtin(['avg', 'min', 'max', 'p95', 'p99', 'availability'])];
 }
 
 /** A series' metric as a person reads it, for a check of `type`. */
@@ -629,6 +636,8 @@ function entryFigure({ spec, hs }) {
   switch (spec.metric) {
     case 'min': return s.minMs;
     case 'max': return s.maxMs;
+    case 'p95': return s.p95Ms;
+    case 'p99': return s.p99Ms;
     case 'jitter': return mean('jitterMs');
     case 'loss': return mean('lossPct');
     case 'availability': return s.count > 0 ? s.availability : null;

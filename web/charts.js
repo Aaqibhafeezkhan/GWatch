@@ -729,7 +729,7 @@ export function hexToRgba(hex, a) {
 
 /* ---------- Series conversion ---------- */
 
-const METRIC_KEY = { avg: 'avgMs', min: 'minMs', max: 'maxMs', jitter: 'jitterMs', loss: 'lossPct', availability: 'availability' };
+const METRIC_KEY = { avg: 'avgMs', min: 'minMs', max: 'maxMs', p95: 'p95Ms', p99: 'p99Ms', jitter: 'jitterMs', loss: 'lossPct', availability: 'availability' };
 
 /** HistorySeries → chart series. metric: avg|min|max|jitter|loss|availability */
 export function toSeries(hs, metric = 'avg', color) {

@@ -51,6 +51,7 @@ export function install(m) {
     const points = [];
     const step = bucketSec * 1000;
     let sum = 0, cnt = 0, fails = 0, min = Infinity, max = -Infinity;
+    const lats = [];
     const isPaused = !n.enabled || !c.enabled;
     const start = Math.floor(from / step) * step;
     for (let t = start; t <= to; t += step) {
@@ -77,13 +78,18 @@ export function install(m) {
       const avg = ok && c.type !== 'system' ? +lat.toFixed(2) : null;
       const loss = c.type === 'ping' ? (failedFrac >= 1 ? 100 : (f > 0.60 && f < 0.63 ? +(25 * r()).toFixed(1) : (r() < 0.02 ? 25 : 0))) : null;
       const pt = { ts: iso(t), avgMs: avg, minMs: ok ? +(lat * 0.85).toFixed(2) : null, maxMs: ok ? +(lat * (1.2 + (source === 'raw' ? 0 : r() * 0.5))).toFixed(2) : null, jitterMs: ok ? +(lat * 0.1).toFixed(2) : null, lossPct: loss, availability: +avail.toFixed(2), count, failures };
+      // Percentiles, as the server reads them from a bucket's histogram; a
+      // raw result is its own.
+      if (avg != null) Object.assign(pt, source === 'raw' ? { p50Ms: avg, p95Ms: avg, p99Ms: avg } : { p50Ms: +(lat * 0.97).toFixed(2), p95Ms: +(lat * 1.15).toFixed(2), p99Ms: +(lat * 1.35).toFixed(2) });
       points.push(pt);
-      if (avg != null) { sum += avg; cnt++; if (avg < min) min = avg; if (avg > max) max = avg; }
+      if (avg != null) { sum += avg; cnt++; if (avg < min) min = avg; if (avg > max) max = avg; lats.push(avg); }
       fails += failures;
     }
     const total = points.reduce((a, q) => a + q.count, 0);
+    lats.sort((a, b) => a - b);
+    const q = (x) => (lats.length ? lats[Math.max(0, Math.ceil(x * lats.length) - 1)] : null);
     return { checkId: c.id, checkName: c.name, nodeId: n.id, nodeName: n.name, checkType: c.type, range, source, bucketSeconds: source === 'raw' ? 0 : bucketSec, from: iso(from), to: iso(to), points,
-      summary: { availability: total ? +((1 - fails / total) * 100).toFixed(3) : 0, avgMs: cnt ? +(sum / cnt).toFixed(2) : null, minMs: cnt ? min : null, maxMs: cnt ? max : null, count: total, failures: fails } };
+      summary: { availability: total ? +((1 - fails / total) * 100).toFixed(3) : 0, avgMs: cnt ? +(sum / cnt).toFixed(2) : null, minMs: cnt ? min : null, maxMs: cnt ? max : null, count: total, failures: fails, p50Ms: q(0.5), p95Ms: q(0.95), p99Ms: q(0.99) } };
   }
 
   return { history, metricHistory };
