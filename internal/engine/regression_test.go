@@ -267,7 +267,10 @@ func TestOutboxKeepsOrderAndBacksOff(t *testing.T) {
 	id := n.Checks[0].ID
 	e.settings.Alerts.NotifyRecovery = false
 	var calls int
-	e.opts.Send = func(context.Context, model.SMTPSettings, mailer.Message) error { calls++; return errors.New("connection refused") }
+	e.opts.Send = func(context.Context, model.SMTPSettings, mailer.Message) error {
+		calls++
+		return errors.New("connection refused")
+	}
 	net.down[id] = true
 	if _, err := e.RunNow(context.Background(), id); err != nil {
 		t.Fatal(err)
