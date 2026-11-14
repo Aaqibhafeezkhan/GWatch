@@ -768,9 +768,10 @@ func (e *Engine) newMail(kind string, c model.Check, n model.Node, r model.Resul
 // without repeating any of those rules.
 //
 // A down alert counts as delivered when the e-mail or at least one channel
-// got through. Only when nothing did is the alert re-armed (failedMail), so
-// the next failing result tries again; re-arming after a failed e-mail while
-// Slack or PagerDuty already had it would page those channels twice.
+// got through, or is waiting in the outbox to be sent again (outbox.go).
+// Only when neither is true is the alert re-armed (failedMail), so the next
+// failing result tries again; re-arming after a failed e-mail while Slack or
+// PagerDuty already had it would page those channels twice.
 func (e *Engine) sendMail(m mailTask) {
 	e.mu.Lock()
 	s := e.settings
@@ -800,7 +801,15 @@ func (e *Engine) sendMail(m mailTask) {
 		defer e.wg.Done()
 		defer e.releaseMailDone(done, m)
 		label := alertLabel(m.kind)
-		delivered := false
+		raised := time.Now()
+		backlog := e.backlog()
+		delivered, queued := false, false
+		if email && backlog[emailTarget] {
+			// Earlier alerts are still waiting for e-mail to work again;
+			// this one goes behind them rather than overtaking them.
+			queued = e.outboxAlert(m, emailTarget, raised, "", 0) || queued
+			email = false
+		}
 		if email {
 			err := e.deliverMail(s.Alerts.SMTP, msg)
 			e.mu.Lock()
@@ -813,8 +822,13 @@ func (e *Engine) sendMail(m mailTask) {
 			e.mu.Unlock()
 			if err != nil {
 				e.log.Errorf("send %s email for %s/%s: %v", m.kind, m.node.Name, m.check.Name, err)
+				detail := err.Error()
+				if e.outboxAlert(m, emailTarget, raised, err.Error(), 0) {
+					queued = true
+					detail += " " + queuedNote
+				}
 				e.recordEvent(model.Event{Type: model.EventAlertFailed, NodeID: ptrInt64(m.node.ID), CheckID: ptrInt64(m.check.ID), NodeName: m.node.Name, CheckName: m.check.Name,
-					Title: label + " email failed", Detail: err.Error()})
+					Title: label + " email failed", Detail: detail})
 			} else {
 				delivered = true
 				e.recordEvent(model.Event{Type: model.EventAlertSent, NodeID: ptrInt64(m.node.ID), CheckID: ptrInt64(m.check.ID), NodeName: m.node.Name, CheckName: m.check.Name,
@@ -822,14 +836,51 @@ func (e *Engine) sendMail(m mailTask) {
 			}
 		}
 		for _, ch := range channels {
-			if e.deliverChannel(ch, m, s.General.InstanceName, label) {
+			switch e.channelOrQueue(ch, m, s.General.InstanceName, label, raised, backlog) {
+			case sentNow:
 				delivered = true
+			case sentLater:
+				queued = true
 			}
 		}
-		if !delivered {
+		// An alert waiting in the outbox counts as raised: re-arming it as
+		// well would send it twice once the destination works again.
+		if !delivered && !queued {
 			e.failedMail(m)
 		}
 	}()
+}
+
+// queuedNote ends the timeline entry of an alert that failed and is now
+// waiting in the outbox.
+const queuedNote = "GWatch will keep trying to send it for a day, and say when it was raised."
+
+// Outcomes of channelOrQueue.
+const (
+	notSent = iota
+	sentNow
+	sentLater // waiting in the outbox
+)
+
+// channelOrQueue sends an alert to one channel, or puts it in the outbox:
+// straight away when earlier alerts are already waiting for the channel, or
+// when sending fails.
+func (e *Engine) channelOrQueue(ch model.AlertChannel, m mailTask, instance, label string, raised time.Time, backlog map[string]bool) int {
+	target := channelTarget(ch.ID)
+	if ch.ID != "" && backlog[target] {
+		if e.outboxAlert(m, target, raised, "", 0) {
+			return sentLater
+		}
+		return notSent
+	}
+	res := e.deliverChannel(ch, m, instance, label)
+	if res.OK {
+		return sentNow
+	}
+	if ch.ID != "" && e.outboxAlert(m, target, raised, res.Error, res.RetryAfter) {
+		return sentLater
+	}
+	return notSent
 }
 
 // alertLabel is how an alert of a kind is named in the timeline.
@@ -912,7 +963,7 @@ func alertVars(m mailTask, instance, channel string) actions.Vars {
 // deliverChannel runs one "also notify" channel for an alert, through the
 // same slots as alert e-mails and with the same single retry, and records the
 // outcome in the timeline. It reports whether the channel took the alert.
-func (e *Engine) deliverChannel(ch model.AlertChannel, m mailTask, instance, label string) bool {
+func (e *Engine) deliverChannel(ch model.AlertChannel, m mailTask, instance, label string) model.ActionResult {
 	name := ch.Name
 	if strings.TrimSpace(name) == "" {
 		name = string(ch.Action.Type)
@@ -929,7 +980,9 @@ func (e *Engine) deliverChannel(ch model.AlertChannel, m mailTask, instance, lab
 		return e.Actions().Run(work, ch.Action, vars)
 	}
 	res := attempt()
-	if !res.OK && mailRetryAfter > 0 && work.Err() == nil {
+	// A service that asked to be left alone for longer than the quick retry
+	// waits is not asked again now; the outbox waits as long as it said.
+	if !res.OK && mailRetryAfter > 0 && work.Err() == nil && res.RetryAfter <= mailRetryAfter {
 		select {
 		case <-time.After(mailRetryAfter):
 			res = attempt()
@@ -951,13 +1004,17 @@ func (e *Engine) deliverChannel(ch model.AlertChannel, m mailTask, instance, lab
 	for _, t := range about {
 		ev := model.Event{NodeID: ptrInt64(t.node.ID), CheckID: ptrInt64(t.check.ID), NodeName: t.node.Name, CheckName: t.check.Name}
 		if !res.OK {
-			ev.Type, ev.Title, ev.Detail = model.EventAlertFailed, fmt.Sprintf("%s to %s failed", label, name), firstLine(res.Error)
+			detail := firstLine(res.Error)
+			if ch.ID != "" {
+				detail += " " + queuedNote
+			}
+			ev.Type, ev.Title, ev.Detail = model.EventAlertFailed, fmt.Sprintf("%s to %s failed", label, name), detail
 		} else {
 			ev.Type, ev.Title, ev.Detail = model.EventAlertSent, fmt.Sprintf("%s sent to %s", label, name), fmt.Sprintf("%s — %s", ch.Action.Type, firstLine(res.Output))
 		}
 		e.recordEvent(ev)
 	}
-	return res.OK
+	return res
 }
 
 // TestAlertChannel sends a sample alert through one "also notify" channel,

@@ -1606,6 +1606,11 @@ type Health struct {
 	// server). While it is above zero, results are not being kept and those
 	// checks are retried with a growing wait; ResultWriteError is the newest
 	// error and ResultWriteFailingSince when the failures began.
+	// QueuedAlerts is how many alerts are waiting to be sent again because
+	// their destination did not work when they were raised (the alert
+	// outbox), and OldestQueuedAlertAt when the oldest was raised.
+	QueuedAlerts            int        `json:"queuedAlerts"`
+	OldestQueuedAlertAt     *time.Time `json:"oldestQueuedAlertAt,omitempty"`
 	ResultWriteFailures     int        `json:"resultWriteFailures"`
 	ResultWriteError        string     `json:"resultWriteError,omitempty"`
 	ResultWriteFailingSince *time.Time `json:"resultWriteFailingSince,omitempty"`
@@ -1793,6 +1798,10 @@ type ActionResult struct {
 	StatusCode int       `json:"statusCode,omitempty"`
 	StartedAt  time.Time `json:"startedAt"`
 	DurationMS int64     `json:"durationMs"`
+	// RetryAfter is how long the service asked to be left alone before the
+	// next attempt (an HTTP Retry-After on 429 or 503), or 0. The alert
+	// outbox waits at least this long before sending again.
+	RetryAfter time.Duration `json:"-"`
 }
 
 // TriggerConditions lists the conditions a trigger can react to.

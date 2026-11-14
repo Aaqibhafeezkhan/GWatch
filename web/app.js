@@ -295,6 +295,7 @@ function renderHealth() {
   if (!hl.schedulerRunning) issues.push('scheduler stopped');
   if (hl.lastCheckAt && Date.now() - new Date(hl.lastCheckAt).getTime() > 10 * 60e3 && hl.checksEnabled > 0) issues.push('no checks recently');
   if (hl.resultWriteFailures) issues.push('results are not being saved');
+  if (hl.queuedAlerts) issues.push('alerts waiting to be sent');
   if (hl.retention?.lastError) issues.push('retention error');
   if (hl.backup?.lastBackupAt && !hl.backup.lastBackupOk) issues.push('backup failed');
   if (hl.recentErrors?.length) issues.push('recent errors');

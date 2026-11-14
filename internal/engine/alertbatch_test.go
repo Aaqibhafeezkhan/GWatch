@@ -180,9 +180,9 @@ func TestAlertGroupRecoveryCancelsUnsentDown(t *testing.T) {
 	waitFor(t, func() bool { return mb.count() == 2 })
 }
 
-// A grouped e-mail that fails re-arms every check in it, so their next
-// failing results alert again.
-func TestAlertGroupFailureRearmsAll(t *testing.T) {
+// A grouped e-mail that fails waits in the outbox as one message, every
+// check in it counting as alerted, and goes out once e-mail works again.
+func TestAlertGroupFailureIsQueued(t *testing.T) {
 	e, st, net, mb := groupedSetup(t, 50, 10*time.Millisecond)
 	var mu sync.Mutex
 	fail := true
@@ -198,22 +198,23 @@ func TestAlertGroupFailureRearmsAll(t *testing.T) {
 	takeDown(t, e, net, ids...)
 	waitFor(t, func() bool {
 		for _, id := range ids {
-			if s, _ := e.State(id); s.AlertActive || s.LastAlertAt != nil || eventTypes(t, st, id)[model.EventAlertFailed] != 1 {
+			if s, _ := e.State(id); !s.AlertActive || eventTypes(t, st, id)[model.EventAlertFailed] != 1 {
 				return false
 			}
 		}
 		return true
 	})
+	if q, _ := st.QueuedAlerts(context.Background()); len(q) != 1 {
+		t.Fatalf("want the grouped alert queued once, got %d", len(q))
+	}
 	mu.Lock()
 	fail = false
 	mu.Unlock()
-	for _, id := range ids {
-		if _, err := e.RunNow(context.Background(), id); err != nil {
-			t.Fatal(err)
-		}
+	e.drainOutbox(context.Background(), time.Now().Add(2*time.Minute))
+	if mb.count() != 1 {
+		t.Fatalf("mails = %v", mb.subjects())
 	}
-	waitFor(t, func() bool { return mb.count() == 1 })
-	if s := mb.subjects(); !strings.Contains(s[0], "3 checks down") {
+	if s := mb.subjects(); !strings.Contains(s[0], "3 checks down") || !strings.Contains(s[0], "(sent late)") {
 		t.Fatalf("subjects = %v", s)
 	}
 	for _, id := range ids {

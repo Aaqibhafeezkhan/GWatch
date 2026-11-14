@@ -68,7 +68,12 @@ export function create(shell) {
           h('div', { class: 'health-cards u-mt-10' },
             hcard(ok(hl.alertsEnabled, 'Enabled', 'Disabled'), 'Email alerts'),
             hcard(ok(hl.smtpConfigured, 'Configured', 'Not configured'), 'SMTP'),
-            hcard(hl.lastAlertAt ? relTime(hl.lastAlertAt) : 'never', 'Last alert sent', hl.lastAlertError ? h('span', { class: 'text-down' }, hl.lastAlertError) : '')),
+            hcard(hl.lastAlertAt ? relTime(hl.lastAlertAt) : 'never', 'Last alert sent', hl.lastAlertError ? h('span', { class: 'text-down' }, hl.lastAlertError) : ''),
+            // The alert outbox: alerts whose e-mail or channel did not work
+            // when they were raised, tried again for a day.
+            hcard(num(hl.queuedAlerts || 0), 'Waiting to be sent', hl.queuedAlerts
+              ? h('span', { class: 'text-degraded' }, `The oldest was raised ${relTime(hl.oldestQueuedAlertAt)}. GWatch tries again every few minutes, for up to a day, and says when each was raised.`)
+              : 'Every alert has been delivered')),
           h('div', { class: 'btn-group u-mt-12' }, h('a', { class: 'btn btn-sm', href: '#/settings/alerts' }, 'Alert settings'))),
         h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Recent internal errors'), h('a', { class: 'btn btn-sm', href: '#/audit/log' }, 'Open service log')),
           hl.recentErrors?.length ? h('div', { class: 'event-rows' }, hl.recentErrors.map((e) => eventRow(e))) : h('div', { class: 'all-good', style: { padding: '10px' } }, icon('check'), h('strong', null, 'No internal errors recorded'))),

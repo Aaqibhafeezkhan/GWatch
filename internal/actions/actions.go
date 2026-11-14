@@ -408,7 +408,7 @@ func (r *Runner) runHTTP(ctx context.Context, a model.Action, vars Vars, res mod
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxOutput))
-	res.StatusCode = resp.StatusCode
+	res.StatusCode, res.RetryAfter = resp.StatusCode, retryAfterNow(resp)
 	res.Output = fmt.Sprintf("%s %s → %s\n%s", method, url, resp.Status, strings.TrimSpace(string(data)))
 	expected := strings.TrimSpace(a.ExpectedStatus)
 	if expected == "" {

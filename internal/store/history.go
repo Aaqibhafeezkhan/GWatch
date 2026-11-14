@@ -594,7 +594,7 @@ func (s *Store) InsertEventsBatch(ctx context.Context, events []model.Event) err
 // ClearAll wipes every table (used before a restore).
 func (s *Store) ClearAll(ctx context.Context, includeHistory bool) error {
 	return s.writeTx(ctx, func(tx *wtx) error {
-		tables := []string{"rule_state", "rules", "triggers", "endpoints", "maintenance_windows", "dashboards", "check_state", "checks", "nodes", "settings"}
+		tables := []string{"alert_outbox", "rule_state", "rules", "triggers", "endpoints", "maintenance_windows", "dashboards", "check_state", "checks", "nodes", "settings"}
 		if includeHistory {
 			tables = append([]string{"results", "rollups", "events"}, tables...)
 		}
@@ -625,7 +625,9 @@ func (s *Store) ClearHistory(ctx context.Context) error {
 // checks so even a check moved between nodes keeps its history.
 func (s *Store) RestoreNodes(ctx context.Context, nodes []model.Node, includeHistory bool) error {
 	return s.writeTx(ctx, func(tx *wtx) error {
-		tables := []string{"rule_state", "rules", "triggers", "endpoints", "maintenance_windows", "dashboards", "check_state", "settings"}
+		// Alerts still waiting to be sent are about the configuration being
+		// replaced, so they go with it.
+		tables := []string{"alert_outbox", "rule_state", "rules", "triggers", "endpoints", "maintenance_windows", "dashboards", "check_state", "settings"}
 		if includeHistory {
 			tables = append([]string{"results", "rollups", "events", "incidents"}, tables...)
 		}

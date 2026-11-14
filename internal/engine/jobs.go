@@ -432,6 +432,7 @@ func (e *Engine) Health(ctx context.Context) model.Health {
 	// The probe may open two sockets, so it runs before the engine lock is
 	// taken; it is cached for a minute in any case.
 	ping := checks.PingStatusNow()
+	queued, oldestQueued := e.outboxState(ctx)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	ping.Configured = e.settings.General.PingMethod
@@ -467,6 +468,8 @@ func (e *Engine) Health(ctx context.Context) model.Health {
 		Platform:         runtime.GOOS + "/" + runtime.GOARCH,
 		Ping:             ping,
 
+		QueuedAlerts:            queued,
+		OldestQueuedAlertAt:     oldestQueued,
 		ResultWriteFailures:     len(e.writeFails),
 		ResultWriteError:        e.writeErr,
 		ResultWriteFailingSince: e.writeFailSince,

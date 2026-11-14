@@ -256,8 +256,9 @@ func (e *Engine) sendBatch(tasks []mailTask) {
 // non-incident channel for all of tasks, which share a node, a kind and a
 // recipient list, and one event per check to the incident channels. A check
 // counts as alerted when the e-mail, a group channel or one of its own
-// incident events got through; a down check for which nothing did is
-// re-armed, exactly as sendMail does for a single alert.
+// incident events got through or is waiting in the outbox; a down check for
+// which neither is true is re-armed, exactly as sendMail does for a single
+// alert.
 func (e *Engine) sendGroup(tasks []mailTask) {
 	e.mu.Lock()
 	s := e.settings
@@ -310,7 +311,13 @@ func (e *Engine) sendGroup(tasks []mailTask) {
 		defer e.wg.Done()
 		defer e.releaseMailDone(done, tasks...)
 		label := alertLabel(kind)
-		delivered := false
+		raised := time.Now()
+		backlog := e.backlog()
+		delivered, queued := false, false
+		if email && backlog[emailTarget] {
+			queued = e.outboxAlert(summary, emailTarget, raised, "", 0)
+			email = false
+		}
 		if email {
 			err := e.deliverMail(s.Alerts.SMTP, msg)
 			e.mu.Lock()
@@ -321,14 +328,20 @@ func (e *Engine) sendGroup(tasks []mailTask) {
 				e.lastAlertErr = ""
 			}
 			e.mu.Unlock()
+			detail := ""
 			if err != nil {
 				e.log.Errorf("send grouped %s email for %s (%d checks): %v", kind, node.Name, len(tasks), err)
+				detail = err.Error()
+				if e.outboxAlert(summary, emailTarget, raised, err.Error(), 0) {
+					queued = true
+					detail += " " + queuedNote
+				}
 			}
 			delivered = err == nil
 			for _, t := range tasks {
 				ev := model.Event{NodeID: ptrInt64(t.node.ID), CheckID: ptrInt64(t.check.ID), NodeName: t.node.Name, CheckName: t.check.Name}
 				if err != nil {
-					ev.Type, ev.Title, ev.Detail = model.EventAlertFailed, label+" email failed", err.Error()
+					ev.Type, ev.Title, ev.Detail = model.EventAlertFailed, label+" email failed", detail
 				} else {
 					ev.Type, ev.Title = model.EventAlertSent, label+" emailed"
 					ev.Detail = fmt.Sprintf("Sent to %s, in one e-mail about %d checks on %s", strings.Join(first.to, ", "), len(tasks), node.Name)
@@ -337,14 +350,17 @@ func (e *Engine) sendGroup(tasks []mailTask) {
 			}
 		}
 		for _, ch := range groupChannels {
-			if e.deliverChannel(ch, summary, s.General.InstanceName, label) {
+			switch e.channelOrQueue(ch, summary, s.General.InstanceName, label, raised, backlog) {
+			case sentNow:
 				delivered = true
+			case sentLater:
+				queued = true
 			}
 		}
 		for _, t := range tasks {
-			ok := delivered
+			ok := delivered || queued
 			for _, ch := range incidentChannels {
-				if e.deliverChannel(ch, t, s.General.InstanceName, label) {
+				if e.channelOrQueue(ch, t, s.General.InstanceName, label, raised, backlog) != notSent {
 					ok = true
 				}
 			}

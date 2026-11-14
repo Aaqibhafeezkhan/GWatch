@@ -80,6 +80,9 @@ type Engine struct {
 	// see process. writeFails counts each check's consecutive failed writes
 	// and writeErr/writeFailSince describe the newest run of failures, for
 	// Monitor health; see writestate.go.
+	// outboxMu keeps two drains of the alert outbox from sending the same
+	// alert; see outbox.go.
+	outboxMu       sync.Mutex
 	writing        map[int64]chan struct{}
 	writeFails     map[int64]int
 	writeErr       string
@@ -223,7 +226,8 @@ func (e *Engine) Start(parent context.Context) error {
 	e.mu.Lock()
 	e.log.Printf("engine started: %d node(s), %d check(s), max %d concurrent", len(e.nodes), len(e.checks), cap(e.sem))
 	e.mu.Unlock()
-	e.wg.Add(6)
+	e.wg.Add(7)
+	go e.outboxLoop()
 	go e.schedulerLoop()
 	go e.maintenanceLoop()
 	go e.retentionLoop()

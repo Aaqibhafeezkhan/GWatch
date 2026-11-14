@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/jxburros/GWatch/internal/checks"
 	"github.com/jxburros/GWatch/internal/mailer"
 	"github.com/jxburros/GWatch/internal/model"
+	"github.com/jxburros/GWatch/internal/store"
 )
 
 func regressionNode(t *testing.T, e *Engine) model.Node {
@@ -210,8 +212,11 @@ func TestSilenceExpiryReevaluatesRules(t *testing.T) {
 	}
 }
 
-func TestFailedSMTPRetriesWithoutFalseRecovery(t *testing.T) {
-	e, _, net, mb := setup(t)
+// An outage whose alert e-mail could not be sent (the connection went down
+// with the router, say) is still reported once e-mail works again: the down
+// alert and its recovery wait in the outbox and go out as one message.
+func TestFailedSMTPIsSentLateWithItsRecovery(t *testing.T) {
+	e, st, net, mb := setup(t)
 	n := regressionNode(t, e)
 	id := n.Checks[0].ID
 	e.opts.Send = func(context.Context, model.SMTPSettings, mailer.Message) error { return errors.New("SMTP unavailable") }
@@ -221,26 +226,82 @@ func TestFailedSMTPRetriesWithoutFalseRecovery(t *testing.T) {
 	}
 	e.wg.Wait()
 	state, _ := e.State(id)
-	if state.AlertActive || state.LastAlertAt != nil {
-		t.Fatalf("failed delivery consumed alert: %+v", state)
+	if !state.AlertActive || state.LastAlertAt == nil {
+		t.Fatalf("a queued alert counts as raised: %+v", state)
 	}
-	e.opts.Send = mb.send
 	net.down[id] = false
 	if _, err := e.RunNow(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	e.wg.Wait()
-	if mb.count() != 0 {
-		t.Fatal("recovery sent for failed down notification")
+	if q := queued(t, st); len(q) != 2 || q[0].Kind != "down" || q[1].Kind != "recovered" {
+		t.Fatalf("the down alert and the recovery should both wait: %+v", q)
 	}
+	// Not due yet: nothing is sent, and nothing is lost.
+	e.opts.Send = mb.send
+	e.drainOutbox(context.Background(), time.Now())
+	if mb.count() != 0 {
+		t.Fatal("a queued alert was sent before its retry was due")
+	}
+	e.drainOutbox(context.Background(), time.Now().Add(2*time.Minute))
+	subjects := mb.subjects()
+	if len(subjects) != 1 || !strings.Contains(subjects[0], "RECOVERED") {
+		t.Fatalf("want one message for the whole outage, got %v", subjects)
+	}
+	mb.mu.Lock()
+	body := mb.sent[0].TextBody
+	mb.mu.Unlock()
+	if !strings.Contains(body, "Was down from") || !strings.Contains(body, "Neither alert could be sent at the time") {
+		t.Fatalf("the message should say what happened:\n%s", body)
+	}
+	if len(queued(t, st)) != 0 {
+		t.Fatal("the outbox should be empty")
+	}
+}
+
+// An alert queued behind another for the same destination is not sent ahead
+// of it, and one that still fails waits longer each time.
+func TestOutboxKeepsOrderAndBacksOff(t *testing.T) {
+	e, st, net, mb := setup(t)
+	n := regressionNode(t, e)
+	id := n.Checks[0].ID
+	e.settings.Alerts.NotifyRecovery = false
+	var calls int
+	e.opts.Send = func(context.Context, model.SMTPSettings, mailer.Message) error { calls++; return errors.New("connection refused") }
 	net.down[id] = true
 	if _, err := e.RunNow(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	e.wg.Wait()
-	if mb.count() != 1 {
-		t.Fatal("down alert did not retry after SMTP recovery")
+	q := queued(t, st)
+	if len(q) != 1 || q[0].Attempts != 1 {
+		t.Fatalf("queued: %+v", q)
 	}
+	first := q[0].NextAt
+	e.drainOutbox(context.Background(), first.Add(time.Second))
+	q = queued(t, st)
+	if len(q) != 1 || q[0].Attempts != 2 || q[0].NextAt.Sub(first) < 2*time.Minute {
+		t.Fatalf("the second failure should wait two minutes: %+v", q)
+	}
+	// A day later it is given up on, and the timeline says so.
+	e.drainOutbox(context.Background(), q[0].CreatedAt.Add(25*time.Hour))
+	if len(queued(t, st)) != 0 {
+		t.Fatal("a day-old alert should be given up")
+	}
+	evs, _ := st.ListEvents(context.Background(), store.EventFilter{Limit: 10, Types: []model.EventType{model.EventAlertFailed}})
+	if len(evs) == 0 || !strings.Contains(evs[0].Title, "given up") {
+		t.Fatalf("give-up not recorded: %+v", evs)
+	}
+	_ = mb
+}
+
+func queued(t *testing.T, st *store.Store) []store.QueuedAlert {
+	t.Helper()
+	q, err := st.QueuedAlerts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return q
 }
 
 func TestParentProbeWaitsForInFlightReachability(t *testing.T) {

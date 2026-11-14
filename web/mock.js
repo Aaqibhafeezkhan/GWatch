@@ -358,7 +358,7 @@ import { install as installHistory } from './mock/history.js';
       checksTotal: all.length, checksEnabled: all.filter((c) => c.enabled && findNode(c.nodeId).enabled).length, checksRunning: 0, overdueChecks: 0, oldestOverdueSeconds: 0,
       lastGap: { from: ago(2 * DAY + 6 * HOUR + 45 * MIN), to: ago(2 * DAY + 6 * HOUR), seconds: 2700 },
       databasePath: 'C:\\ProgramData\\GWatch\\gwatch.db', databaseBytes: 48_300_000, databaseDriver: 'modernc.org/sqlite', dataDir: 'C:\\ProgramData\\GWatch', keyPath: 'C:\\ProgramData\\GWatch\\gwatch.key', backupDir: 'C:\\ProgramData\\GWatch\\backups', retention, backup: backupStatus,
-      recentErrors: events.filter((e) => e.type === 'internal_error').slice(0, 5), alertsEnabled: settings.alerts.enabled, smtpConfigured: !!settings.alerts.smtp.host, lastAlertAt: ago(21 * MIN + 30e3), lastAlertError: '', resultWriteFailures: 0, listenAddress: '127.0.0.1:7230', platform: 'windows/amd64',
+      recentErrors: events.filter((e) => e.type === 'internal_error').slice(0, 5), alertsEnabled: settings.alerts.enabled, smtpConfigured: !!settings.alerts.smtp.host, lastAlertAt: ago(21 * MIN + 30e3), lastAlertError: '', queuedAlerts: 0, resultWriteFailures: 0, listenAddress: '127.0.0.1:7230', platform: 'windows/amd64',
       ping: { configured: settings.general.pingMethod || 'auto', auto: 'raw', unprivileged: false, unprivilegedReason: 'unprivileged ICMP socket: windows has no unprivileged ICMP socket', raw: true, rawReason: '', systemPing: 'C:\\Windows\\System32\\PING.EXE', summary: 'the built-in ping uses a raw ICMP socket', checkedAt: ago(30e3) },
     };
   }
