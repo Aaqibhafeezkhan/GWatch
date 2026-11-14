@@ -242,6 +242,34 @@ func (e *Engine) process(ctx context.Context, c model.Check, n model.Node, r mod
 		}
 	}
 
+	// Flapping: one notice when a check starts going down and coming back
+	// again and again, instead of an alert for every change (flap.go). A
+	// check that is still down when it settles is re-evaluated below and
+	// alerted on as usual, since its down alert was held back.
+	if began, ended := updateFlap(st, settings.Alerts.FlapDetection); began {
+		detail := flapDetail(st)
+		ev(model.EventFlapping, "Flapping", detail, nil)
+		if e.canWarn(c, n, st, settings, now) {
+			m := e.newMail("warning", c, n, r, st, settings)
+			m.message = "Flapping: " + detail
+			mails = append(mails, m)
+		}
+	} else if ended {
+		ev(model.EventFlappingEnded, "Stopped flapping", "It has been steady for long enough that alerts are sent as usual again.", nil)
+		if st.Status == model.StatusDown && !st.AlertActive {
+			evaluateDown = true
+		}
+	}
+
+	// A check that has started failing but is not down yet is confirmed
+	// sooner than its interval (Settings › Alerts › re-check), so a real
+	// outage is known in seconds rather than after threshold × interval.
+	if !r.Success && st.Status != model.StatusDown && st.NextRunAt != nil {
+		if wait := recheckAfter(c, settings); wait > 0 {
+			st.NextRunAt = ptrTime(now.Add(wait))
+		}
+	}
+
 	// Metrics judged one by one (a hardware check's processor, memory, each
 	// disk ...). Each has its own warning that begins and clears on its own
 	// timeline, the way certificate warnings do, so that "disk /srv is
@@ -465,6 +493,8 @@ func suppressLabel(reason string) string {
 	switch reason {
 	case "dependency":
 		return "parent is down"
+	case "flapping":
+		return "flapping"
 	}
 	return reason
 }
@@ -488,6 +518,8 @@ func suppressDetail(d downDecision, st *model.CheckState, s model.Settings) stri
 		return fmt.Sprintf("An alert for this check was sent less than %d minutes ago (cooldown); no email was sent.", d.cooldown)
 	case "disabled":
 		return "Email alerts are disabled for this check."
+	case "flapping":
+		return "This check keeps going down and coming back, so its alerts are held back until it settles; no email was sent."
 	}
 	return "No email was sent."
 }
@@ -505,6 +537,9 @@ func (e *Engine) evaluateDownLocked(c model.Check, n model.Node, st *model.Check
 	}
 	if st.SilencedUntil != nil && st.SilencedUntil.After(now) {
 		return downDecision{reason: "silenced"}
+	}
+	if st.Flapping {
+		return downDecision{reason: "flapping"}
 	}
 	if n.DependsOnNode != nil {
 		pc, pn := e.parentDownLocked(n)
@@ -1031,6 +1066,21 @@ func (e *Engine) Silence(ctx context.Context, checkID int64, d time.Duration) (m
 	// look at it, and counts again once the silence is lifted.
 	e.evaluateRules(ctx, ptrInt64(c.ID))
 	return snapshot, nil
+}
+
+// recheckAfter is how soon a failing check that is not down yet runs again,
+// or 0 to wait its ordinary interval: when the re-check is off, longer than
+// the interval, or pointless because one failure already makes it down.
+func recheckAfter(c model.Check, s model.Settings) time.Duration {
+	threshold := c.FailureThreshold
+	if threshold <= 0 {
+		threshold = s.Alerts.FailureThreshold
+	}
+	secs := s.Alerts.RecheckSeconds
+	if threshold <= 1 || secs <= 0 || secs >= c.IntervalSeconds {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func effectiveCertWarnDays(c model.Check, s model.Settings) int {

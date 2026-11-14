@@ -431,6 +431,9 @@ func (s *Server) validateSettings(st *model.Settings, current model.Settings, co
 	if a.GroupWindowSeconds < 0 || a.GroupWindowSeconds > model.MaxAlertGroupWindowSeconds {
 		return badSettings(fmt.Sprintf("the alert grouping window must be between 0 (off) and %d seconds", model.MaxAlertGroupWindowSeconds))
 	}
+	if a.RecheckSeconds != 0 && (a.RecheckSeconds < 5 || a.RecheckSeconds > model.MaxRecheckSeconds) {
+		return badSettings(fmt.Sprintf("the re-check after a failure must be 0 (off) or between 5 and %d seconds", model.MaxRecheckSeconds))
+	}
 	if !model.ValidWarningDigest(a.WarningDigest) {
 		return badSettings("the warning digest must be off, hourly or daily")
 	}

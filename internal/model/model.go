@@ -723,7 +723,7 @@ type CheckState struct {
 	LastLatencyMS       *float64   `json:"lastLatencyMs"`
 	AlertActive         bool       `json:"alertActive"` // a down notification was sent and no recovery yet
 	AlertSuppressed     bool       `json:"alertSuppressed"`
-	SuppressReason      string     `json:"suppressReason,omitempty"` // maintenance | dependency | silenced | cooldown | disabled
+	SuppressReason      string     `json:"suppressReason,omitempty"` // maintenance | dependency | silenced | cooldown | disabled | flapping
 	LastAlertAt         *time.Time `json:"lastAlertAt"`
 	LastWarnAt          *time.Time `json:"lastWarnAt"`
 	SilencedUntil       *time.Time `json:"silencedUntil"`
@@ -739,6 +739,12 @@ type CheckState struct {
 	LastContentHash  string            `json:"-"`
 	LastContentValue string            `json:"-"`
 	Running          bool              `json:"running"`
+	// Flapping is set while the check keeps going down and coming back (see
+	// internal/engine/flap.go); its down alerts are held back meanwhile.
+	// FlapHistory is the newest judged states it is worked out from, down
+	// (true) or not, oldest first. Both are kept in memory only.
+	Flapping    bool   `json:"flapping,omitempty"`
+	FlapHistory []bool `json:"-"`
 }
 
 // EventType enumerates the incident timeline entries.
@@ -780,6 +786,10 @@ const (
 	// it is back), and came back. One pair for the collector, not one per check.
 	EventCollectorDown EventType = "collector_unreachable"
 	EventCollectorUp   EventType = "collector_back"
+	// A check began flapping (going down and coming back again and again),
+	// and settled down again.
+	EventFlapping      EventType = "flapping"
+	EventFlappingEnded EventType = "flapping_ended"
 )
 
 // Event is one entry in the incident/event timeline.
@@ -990,7 +1000,28 @@ type AlertSettings struct {
 	// into one summary sent hourly or daily instead of one e-mail each. One
 	// of the WarningDigest* constants; "" reads as off.
 	WarningDigest string `json:"warningDigest"`
+	// RecheckSeconds is how soon a check that has just failed, but has not
+	// yet failed FailureThreshold times in a row, runs again. Waiting the
+	// check's full interval between confirmations meant a five-minute check
+	// with a threshold of three took a quarter of an hour to alert; a short
+	// re-check keeps the protection against one-off blips and learns of a
+	// real outage sooner. It applies only when shorter than the check's own
+	// interval. 0 turns it off, so every run waits the full interval as it
+	// always used to; an install whose stored settings predate it gets the default.
+	RecheckSeconds int `json:"recheckSeconds"`
+	// FlapDetection notices a check that keeps going down and coming back
+	// (see flap.go). While it is flapping, its down and recovery alerts are
+	// held back and one "flapping" warning is sent instead; once it settles,
+	// alerting carries on as normal. On by default.
+	FlapDetection bool `json:"flapDetection"`
 }
+
+// DefaultRecheckSeconds is AlertSettings.RecheckSeconds for a new install,
+// and MaxRecheckSeconds the most it can be set to.
+const (
+	DefaultRecheckSeconds = 30
+	MaxRecheckSeconds     = 3600
+)
 
 // MaxAlertGroupWindowSeconds bounds AlertSettings.GroupWindowSeconds. A
 // longer window would hold a down alert back for longer than most people
@@ -1369,6 +1400,8 @@ func DefaultSettings() Settings {
 			CertWarnDays:     14,
 			SMTP:             SMTPSettings{Port: 587, Security: "starttls"},
 			WarningDigest:    WarningDigestOff,
+			RecheckSeconds:   DefaultRecheckSeconds,
+			FlapDetection:    true,
 		},
 		Retention: RetentionSettings{
 			RawDays:     30,

@@ -19,6 +19,7 @@ export function create(shell) {
     a.channels = a.channels || [];
     const recipients = chipInput({ values: a.recipients || [], placeholder: 'Add an email address and press Enter', validate: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v), onChange: (v) => { a.recipients = v; } });
     const notifyRecovery = checkbox({ label: 'Send a recovery email when a check becomes healthy again', checked: !!a.notifyRecovery, onChange: (v) => { a.notifyRecovery = v; } });
+    const flapDetection = checkbox({ label: 'Notice checks that keep going down and coming back, and send one "flapping" warning instead of an alert for each change', checked: !!a.flapDetection, onChange: (v) => { a.flapDetection = v; } });
     const notifyWarnings = checkbox({ label: 'Also email for warnings (high latency, packet loss, expiring certificates, content changes)', checked: !!a.notifyWarnings, onChange: (v) => { a.notifyWarnings = v; } });
     /* Grouping and the digest (#99) only change how many e-mails carry the
      * alerts and when they leave, never whether an alert is due. */
@@ -46,8 +47,10 @@ export function create(shell) {
           h('div', { class: 'form-grid-3' },
             numField(a, 'failureThreshold', 'Failures before alerting', { min: 1, help: 'Consecutive failed runs before a check is down.' }),
             numField(a, 'cooldownMinutes', 'Cooldown', { unitLabel: 'min', help: 'Minimum time between repeated alerts for the same check.' }),
-            numField(a, 'certWarnDays', 'Certificate warning', { unitLabel: 'days', min: 1, help: 'Warn when a certificate expires within this many days.' })),
-          h('div', { class: 'stack-sm' }, notifyRecovery, notifyWarnings),
+            numField(a, 'certWarnDays', 'Certificate warning', { unitLabel: 'days', min: 1, help: 'Warn when a certificate expires within this many days. A short-lived certificate (a few days) is warned about once a third of its life is left instead.' })),
+          h('div', { class: 'form-grid' },
+            numField(a, 'recheckSeconds', 'Re-check a failing check after', { unitLabel: 'seconds', max: 3600, help: 'After a failure, run the check again this soon instead of waiting its full interval, until it is confirmed down or passes. Used only when shorter than the check\'s interval. 0 = off.' })),
+          h('div', { class: 'stack-sm' }, notifyRecovery, notifyWarnings, flapDetection),
           h('div', { class: 'form-grid' },
             numField(a, 'groupWindowSeconds', 'Group alerts for the same node within', { unitLabel: 'seconds', max: 300, help: 'When several checks on one node go down (or recover) within this time, send one email listing them all instead of one each. Delays the first alert by up to this long. 0 = off, at most 300.' }),
             field({ label: 'Send warnings as a digest', input: digest, help: 'Collect warning emails into one summary instead of sending each. Down and recovery emails are always sent straight away; notification channels still get each warning.' })),

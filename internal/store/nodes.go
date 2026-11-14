@@ -1282,6 +1282,7 @@ func (s *Store) LoadSettings(ctx context.Context) (model.Settings, error) {
 		st.Alerts.Channels = []model.AlertChannel{}
 	}
 	st.Alerts.GroupWindowSeconds = min(max(st.Alerts.GroupWindowSeconds, 0), model.MaxAlertGroupWindowSeconds)
+	st.Alerts.RecheckSeconds = min(max(st.Alerts.RecheckSeconds, 0), model.MaxRecheckSeconds)
 	if st.Alerts.WarningDigest == "" || !model.ValidWarningDigest(st.Alerts.WarningDigest) {
 		st.Alerts.WarningDigest = model.WarningDigestOff
 	}

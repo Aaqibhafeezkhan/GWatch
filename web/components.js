@@ -821,6 +821,8 @@ export const EVENT_META = {
   monitor_gap: { label: 'Monitoring gap', icon: 'moon', cls: 'ev-warn' },
   collector_unreachable: { label: 'Collector unreachable', icon: 'radar', cls: 'ev-down' },
   collector_back: { label: 'Collector back', icon: 'radar', cls: 'ev-up' },
+  flapping: { label: 'Flapping', icon: 'alert', cls: 'ev-warn' },
+  flapping_ended: { label: 'Stopped flapping', icon: 'check', cls: 'ev-up' },
   internal_error: { label: 'Internal error', icon: 'alert', cls: 'ev-down' },
   backup: { label: 'Backup', icon: 'save', cls: 'ev-info' },
   restore: { label: 'Restore', icon: 'upload', cls: 'ev-info' },
