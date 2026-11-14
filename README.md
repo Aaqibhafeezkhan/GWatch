@@ -15,7 +15,7 @@ and it is never exposed to the internet unless you arrange that yourself.
 
 ![The GWatch dashboard: health counters, what needs attention, and latency charts](marketing/beta/screens/dashboard-dark.png)
 
-> **GWatch is in beta (0.8.11).** It works and it looks after your data, but the
+> **GWatch is in beta (0.8.12).** It works and it looks after your data, but the
 > interface and the JSON API can still change between releases, and bugs are
 > likelier now than they will be at 1.0. [`CHANGELOG.md`](CHANGELOG.md) lists
 > what is in each version, and the [roadmap](development-docs/productRoadmap.md) what is known to be
@@ -56,14 +56,18 @@ switch fails?") and present it full screen.
 Email, Slack, Teams, Discord, Telegram, Matrix, ntfy, Gotify, Pushover, SMS
 (Twilio), PagerDuty or Opsgenie. Alerts wait for a number of failures in a row,
 respect cooldowns, silences and maintenance windows, and can be grouped per
-node or sent as a digest. **Rules** cover the cases one check cannot: "tell me
+node or sent as a digest. A check that keeps going down and coming back sends
+one "flapping" warning, not an alert per change, and an alert that cannot be
+sent because the outage took your internet connection with it is kept and sent
+once the connection is back. **Rules** cover the cases one check cannot: "tell me
 when two of my three DNS servers are down".
 
 **Keeps history and shows it well.**
 Dashboards you lay out yourself, charts that can lay a metric over its own
 earlier days or weeks, an incident timeline, an audit log, and wallboards for a
 spare screen. History is rolled up and pruned automatically, so the database
-stays small.
+stays small, and keeps latency percentiles (the 95th, the 99th) as well as the
+average, across every range a chart can show, up to a year.
 
 **Gets set up quickly.**
 Discovery pings a range, shows what answered with its name and open ports, and
@@ -209,6 +213,14 @@ an assistant *read* your monitoring (and change it only if you allow that); the
 set-up guide is in the app under **Settings › AI & MCP**.
 
 ## What's new
+
+**0.8.12** makes the alerts you already have more dependable: an alert that
+could not be sent (the outage took the internet connection with it) is kept
+and sent once it can be, a failing check is confirmed in seconds rather than
+after several full intervals, a check that keeps flapping sends one warning,
+and six-day certificates are no longer always "expiring". Charts gain the 95th
+and 99th latency percentiles at every range, and a full disk no longer makes
+every check re-run once a second.
 
 **0.8.10** fixes a security problem: a request GWatch made to its own address
 (an HTTP check or webhook pointed at itself) was treated as the local

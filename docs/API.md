@@ -233,7 +233,7 @@ companion that lets an AI assistant use this API with a key, is documented in
 
 ## Health & overview
 
-- `GET /api/health` → `model.Health` (service mode, scheduler, last/next check, db size, retention status, backup status, recent internal errors, alert config state). Also carries the on-disk paths: `dataDir` (the data directory), `databasePath` (`<dataDir>/gwatch.db`, or a password-free `postgres://user@host:port/db` when GWatch is on a server — [`DATABASE.md`](DATABASE.md)), `keyPath` (`<dataDir>/gwatch.key`) and `backupDir` (`<dataDir>/backups`) — see [`INSTALL.md`](INSTALL.md#where-your-data-lives) — and `databaseDriver`, the database driver in use: the SQLite driver the binary was built with (see [`INSTALL.md`](INSTALL.md#choosing-the-sqlite-driver)), or the PostgreSQL/MySQL one.
+- `GET /api/health` → `model.Health` (service mode, scheduler, last/next check, db size, retention status, backup status, recent internal errors, alert config state). `queuedAlerts` is how many alerts are waiting to be sent again and `oldestQueuedAlertAt` when the oldest was raised. `resultWriteFailures` is how many checks could not save their newest result (a full disk, a locked database, an unreachable database server); while it is above zero, `resultWriteError` and `resultWriteFailingSince` say why and since when, and those checks run again after 5 s, doubling to at most 5 min, instead of on their interval. Also carries the on-disk paths: `dataDir` (the data directory), `databasePath` (`<dataDir>/gwatch.db`, or a password-free `postgres://user@host:port/db` when GWatch is on a server — [`DATABASE.md`](DATABASE.md)), `keyPath` (`<dataDir>/gwatch.key`) and `backupDir` (`<dataDir>/backups`) — see [`INSTALL.md`](INSTALL.md#where-your-data-lives) — and `databaseDriver`, the database driver in use: the SQLite driver the binary was built with (see [`INSTALL.md`](INSTALL.md#choosing-the-sqlite-driver)), or the PostgreSQL/MySQL one.
 - `GET /api/overview` → 
   ```json
   {
@@ -711,6 +711,12 @@ checks; tags +critical on 5 nodes").
   Multiple: `GET /api/history?checkId=1&checkId=2&range=24h` → `[HistorySeries]` (always an array when more than one id, single object for one id... to keep it simple the UI should use `GET /api/history/multi?checkId=..&checkId=..&range=` → `[HistorySeries]`).
 - `GET /api/history/multi?checkId=1&checkId=2&range=24h` → `[HistorySeries]`. With `auto=1` and no `checkId`, the service picks up to 4 important checks (critical/high nodes, ping and HTTP first).
 - Point spacing by range: 1h/24h → raw results (or 5-minute rollups if raw is gone), 3d/7d → 5-minute rollups, 30d → hourly, 1y → daily.
+- **Percentiles.** A point drawn from a rollup carries `p50Ms`, `p95Ms` and `p99Ms`, the
+  bucket's latency percentiles, read from the histogram each rollup keeps (logarithmic
+  bins, about 1% relative accuracy, merged exactly from one tier to the next). A raw
+  point's are its own latency. `summary.p50Ms`, `p95Ms` and `p99Ms` are the percentiles
+  of the whole range. They are absent where nothing is known: a failed result, or a
+  bucket rolled up before 0.8.12. Only successful results' latencies count.
 
 ### Named metrics
 
@@ -1149,8 +1155,9 @@ every other event.
 | `cert_warning_cleared` | the certificate is valid and no longer close to expiry |
 | `content_changed` | a `contentWatch` saw the response differ from the previous observation |
 | `alert_sent` | an alert email went out |
-| `alert_suppressed` | an alert was not sent — cooldown, silencing, maintenance, or a parent node being down |
-| `alert_failed` | an alert email could not be delivered |
+| `alert_suppressed` | an alert was not sent — cooldown, silencing, maintenance, a parent node being down, or the check flapping |
+| `alert_failed` | an alert email or channel message could not be delivered (it then waits to be sent again; see `queuedAlerts` under Health), was given up on after a day, or was dropped because alerts or the channel were switched off |
+| `flapping` / `flapping_ended` | a check began going down and coming back again and again (its down alerts are held back), and settled again |
 | `silenced` / `unsilenced` | a check or node was silenced for a while, or released early |
 | `maintenance_began` / `maintenance_ended` | a maintenance window opened or closed |
 | `config_changed` | nodes, checks, settings, the database configuration or anything else in the configuration was changed |
@@ -1485,11 +1492,23 @@ assistant up, not for the assistant: both are admin-only and refuse every API ke
 | `cooldownMinutes` | `60` | the minimum gap between two alerts about the same check |
 | `notifyRecovery` | `true` | also mail when a check recovers |
 | `notifyWarnings` | `true` | also mail on a degraded condition |
-| `certWarnDays` | `14` | how many days before expiry a certificate starts warning |
+| `certWarnDays` | `14` | how many days before expiry a certificate starts warning. When it is at least the certificate's whole lifetime (a six-day certificate), the warning begins once a third of the lifetime is left instead |
 | `smtp` | port `587`, `starttls` | `{ host, port, username, password, from, security }`; `security` is `starttls`, `tls` or `none` |
 | `channels` | `[]` | the "Also notify" list, see below |
 | `groupWindowSeconds` | `0` | 0–300; when above 0, alerts of the same kind (`down`, `recovered`, `warning`) about checks on the same node within this many seconds of the first are sent as one e-mail ("Web: 3 checks down") and one message per non-incident channel (issue #99). PagerDuty and Opsgenie still get one event per check. A check that recovers while its down alert is still waiting sends neither. Out of range is a `400` |
 | `warningDigest` | `"off"` | `off`, `hourly` or `daily`: warning e-mails (not down or recovery ones) are collected and sent as one summary on the hour, or daily at 08:00 local time; channels still get each warning at once. Anything else is a `400` |
+| `recheckSeconds` | `30` | 0 (off) or 5–3600: how soon a check that has failed but not yet `failureThreshold` times in a row runs again, instead of after its whole interval. Used only when shorter than the check's interval and when the threshold is above 1. Out of range is a `400`. Settings saved before 0.8.12 read as `30` |
+| `flapDetection` | `true` | notice a check that keeps changing between down and not down (a weighted share of changes over its last 21 judged states above 30%, ending below 15%). While flapping, its down alerts are held back (`alert_suppressed` with reason `flapping`) and one warning is sent; `CheckState.flapping` is `true` |
+
+**Delivery and the outbox.** An alert e-mail or channel message that still fails after
+its quick retry is kept in the database and tried again after 1, 2, 4, 8 and then every
+15 minutes — or after the `Retry-After` a service sent with a 429 or 503, up to an hour —
+for a day. Each destination's alerts are sent in the order they were raised; a down
+alert and its recovery that are both still waiting are sent as one recovery saying how
+long the check was down (not to PagerDuty or Opsgenie). A late alert carries a "Sent
+late" detail, and a channel gets `{{alert.late}}` with the same text. A waiting alert
+counts as sent for the check's cooldown and `alertActive`. Nothing about this is
+configurable.
 
 `enabled: true` needs somewhere to send: at least one recipient (and then SMTP settings that validate) or at least one enabled channel. Alerts can be channel-only.
 
@@ -1504,7 +1523,7 @@ assistant up, not for the assistant: both are admin-only and refuse every API ke
 | `groups` | only nodes in at least one of these groups; empty means every node |
 | `action` | an `Action` of a notification type (`slack`, `teams`, `discord`, `telegram`, `matrix`, `ntfy`, `gotify`, `pushover`, `twilio`, `pagerduty`, `opsgenie`); anything else is a 400 |
 
-The action runs with the same placeholders a trigger gets, `{{event}}` being the alert kind (`down`, `recovered`, `warning`) and `{{status}}` what the check is now, plus `{{alert.kind}}`, `{{alert.channel}}`, `{{alert.count}}` and `{{alert.checks}}` (how many checks the alert is about and their names: `1` and the check's name, or for a grouped alert the count and a comma-separated list, with `{{check.*}}` empty and `{{message}}` the summary, e.g. "3 checks down: HTTP, JSON, TCP"). Each channel send uses the alert e-mail's delivery slots and its single retry, and records `alert_sent` or `alert_failed` in the timeline. A down alert counts as delivered when the e-mail or any channel got through; only when nothing did is it re-armed for the next failing result. When recovery e-mails are off, the recovery still goes to PagerDuty and Opsgenie channels, so the incident they opened is resolved. Channel credentials are sealed with `gwatch.key` like the passwords, masked in `GET /api/settings` (a masked value saved back keeps the stored one, matched by `id`), and left out of `/api/export/config.json`.
+The action runs with the same placeholders a trigger gets, `{{event}}` being the alert kind (`down`, `recovered`, `warning`) and `{{status}}` what the check is now, plus `{{alert.kind}}`, `{{alert.channel}}`, `{{alert.count}}` and `{{alert.checks}}` (how many checks the alert is about and their names: `1` and the check's name, or for a grouped alert the count and a comma-separated list, with `{{check.*}}` empty and `{{message}}` the summary, e.g. "3 checks down: HTTP, JSON, TCP"). Each channel send uses the alert e-mail's delivery slots and its single retry, and records `alert_sent` or `alert_failed` in the timeline; one that still fails waits in the outbox (see *Delivery and the outbox* above), and an alert sent late also gets `{{alert.late}}` ("Raised at 2026-11-14 14:02; it could not be sent at the time."). A down alert counts as delivered when the e-mail or any channel got through or is waiting in the outbox; only when none is true is it re-armed for the next failing result. When recovery e-mails are off, the recovery still goes to PagerDuty and Opsgenie channels, so the incident they opened is resolved. Channel credentials are sealed with `gwatch.key` like the passwords, masked in `GET /api/settings` (a masked value saved back keeps the stored one, matched by `id`), and left out of `/api/export/config.json`.
 
 **`retention`** — all in days; `0` means "keep forever".
 

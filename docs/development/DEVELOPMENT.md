@@ -108,7 +108,8 @@ job — see ["Releasing the MCP companion"](RELEASING.md#releasing-the-mcp-compa
 | `internal/dbconfig` | Which database to open: flags, `GWATCH_DB_*`, `database.json`, then the SQLite default |
 | `internal/store` | Schema, migrations, single queued writer, rollups and history queries, over a dialect layer that speaks SQLite, PostgreSQL and MySQL/MariaDB |
 | `internal/checks` | Check runners: ping, http, cert, tcp, dns, keyword, json, custom, system (hardware) and snmp; node templates |
-| `internal/engine` | Scheduler, result processing, alert rules, dependencies, maintenance, retention, health, triggers, notification rules |
+| `internal/engine` | Scheduler, result processing, alert rules, dependencies, maintenance, retention, health, triggers, notification rules, flap detection (`flap.go`), the alert outbox (`outbox.go`) and the result write outside the engine lock (`writestate.go`) |
+| `internal/latency` | The mergeable latency histograms each rollup bucket keeps, and the percentiles read from them |
 | `internal/actions` | Automation actions: HTTP requests, git commands, custom scripts, run-node, and the Slack / Teams / ntfy / Pushover notifiers |
 | `internal/auth` | Roles, principals, password hashing, sessions and API-key digests |
 | `internal/secrets` | The envelope that seals individual configuration values with the machine-local `gwatch.key` |

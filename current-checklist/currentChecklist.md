@@ -10,7 +10,7 @@ The organisational checklist for the current working period. It is not a scope g
 - [ ] #203–#209, #249–#252 Low-severity security findings
 - [ ] #253 Supply-chain scanning
 - [ ] #201 `toolchain` directive
-- [ ] #222 Publish a release that matches `VERSION` (0.8.11)
+- [ ] #222 Publish a release that matches `VERSION` (0.8.12)
 - [ ] #272 Tag the MCP module
 - [ ] #10, #286 Licence decision and launch plan (maintainers)
 - [ ] #120 Authenticode identity (maintainers)
@@ -19,4 +19,5 @@ The organisational checklist for the current working period. It is not a scope g
 
 Agents record notes for the next session here (see `AGENTS.md` §10), newest first, and remove them when they no longer apply.
 
+- 2026-11-14 — Claude Code: 0.8.12 / agent 0.8.8 on `claude/nice-shannon-qo6fq6` (alert outbox, re-check interval, flap detection, short-lived certificates, DNS-lookup hint, rollup percentiles, #210, #211, `testing/synctest`). Version is a patch bump by default; the maintainer may prefer 0.9.0 for this much. Not verified locally: PostgreSQL/MySQL (the new `alert_outbox` table and `rollups.latency_hist` column rely on CI's database jobs), Windows/macOS. Left for later: #211's suggested free-disk-space check in the retention loop; `evaluateDownLocked`'s acknowledged-incident read under the engine lock (mentioned in #210); per-check overrides for the re-check interval; CSV history export does not include percentiles. #210 and #211 can be closed once this is merged.
 - 2026-11-10 — Claude Code: Spec-Driven Docs set up. Items marked "Inferred — maintainer to confirm" in `development-docs/` need a maintainer's review. #225 (refresh the roadmap) is addressed by the new `productRoadmap.md` and can be closed once this change is merged.
